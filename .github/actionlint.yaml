@@ -1,0 +1,6 @@
+# actionlint 1.7.12 does not know job.workflow_repository and job.workflow_sha yet; both are
+# documented in the GitHub Actions contexts reference. Remove this when actionlint knows them.
+paths:
+  .github/workflows/npm-release.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined'

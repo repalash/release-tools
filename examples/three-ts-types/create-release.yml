@@ -1,0 +1,27 @@
+# .github/workflows/create-release.yml of a repository whose package is in a subdirectory and
+# needs no build. Each version gets a GitHub release publish@<version> with the tarball.
+name: Publish to npm
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
+jobs:
+  release:
+    permissions:
+      contents: write # GitHub releases
+      id-token: write # npm trusted publishing
+    uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
+    with:
+      packages: types/three
+      build: '' # nothing to install or build
+      github-release: true
+    secrets: inherit

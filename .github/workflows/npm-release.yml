@@ -1,0 +1,186 @@
+name: npm release
+
+# Reusable workflow: publishes the npm packages of the caller repository whose version is not on
+# npm yet, after a reviewer approves the `npm-publish` environment. Usage and repository setup:
+# README.md of this repository.
+#
+# Jobs:
+#   check    lists the packages to publish (public, version not on npm, build order), checks their
+#            CHANGELOG sections (require-changelog), runs `build`, packs each package, and uploads
+#            the tarballs. Runs the caller's code; has no secrets.
+#   notify   starts the Claude review routine and posts the Discord notice. Runs only the scripts
+#            of this repository; it has the secrets and never runs the caller's code.
+#   publish  environment npm-publish: publishes the tarballs with provenance (npm trusted
+#            publishing), then creates a tag or a GitHub release per package.
+#
+# The jobs check out the scripts of this repository at the commit of this workflow file
+# (job.workflow_repository, job.workflow_sha), so a caller pinned to a tag or commit runs the
+# matching scripts. These context properties are not available on GitHub Enterprise Server.
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: 'Package directory (`.`, `types/three`) or `<dir>/*` for every package below <dir>. Several entries: separate them with spaces.'
+        type: string
+        default: '.'
+      build:
+        description: 'Shell command run at the repository root before packing (install, build, test). Empty: no build step.'
+        type: string
+        default: 'npm ci'
+      node-version:
+        description: 'Node.js version for the build.'
+        type: string
+        default: '24'
+      clean-package:
+        description: 'Pack with the clean-package tool of the package: prepack, clean-package, npm pack, clean-package restore.'
+        type: boolean
+        default: false
+      require-changelog:
+        description: 'Fail when a package to publish has no CHANGELOG.md section for its version.'
+        type: boolean
+        default: false
+      tag-format:
+        description: 'Release tag; {name} and {version} are replaced. Empty: `publish@{version}`, or `{name}-{version}` when packages has a glob or several entries.'
+        type: string
+        default: ''
+      github-release:
+        description: 'Create a GitHub release with the tarball for each package (else a plain tag).'
+        type: boolean
+        default: false
+      review-actor:
+        description: 'GitHub user whose pushes start the Claude review routine. Empty: never.'
+        type: string
+        default: 'repalash'
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: 'Discord webhook for the release notice (optional).'
+        required: false
+      CLAUDE_REVIEW_FIRE_URL:
+        description: 'Fire URL of the Claude Code review routine (optional).'
+        required: false
+      CLAUDE_REVIEW_TOKEN:
+        description: 'Bearer token of the Claude Code review routine (optional).'
+        required: false
+    outputs:
+      release:
+        description: 'JSON of the release: {repository, sha, runUrl, packages, errors}. packages is empty when nothing is pending.'
+        value: ${{ jobs.check.outputs.release }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      pending: ${{ steps.check.outputs.pending }}
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags and history for the previous release tag and the commit list
+          persist-credentials: false
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      # Out of the workspace, so the caller's build, tests and pack never see them.
+      - name: Move the release scripts out of the workspace
+        run: mv .release-tools "$RUNNER_TEMP/release-tools"
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false # no dependency cache in release builds
+          node-version: ${{ inputs.node-version }}
+      - name: List the packages to publish
+        id: check
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          TAG_FORMAT: ${{ inputs.tag-format }}
+          REQUIRE_CHANGELOG: ${{ inputs.require-changelog }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/check.mjs"
+      - name: Build
+        if: steps.check.outputs.pending == 'true' && inputs.build != ''
+        env:
+          BUILD_COMMAND: ${{ inputs.build }}
+        run: eval "$BUILD_COMMAND"
+      - name: Pack
+        if: steps.check.outputs.pending == 'true'
+        env:
+          RELEASE: ${{ steps.check.outputs.release }}
+          CLEAN_PACKAGE: ${{ inputs.clean-package }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/pack.mjs" --out "$RUNNER_TEMP/tarballs"
+      - uses: actions/upload-artifact@v7
+        if: steps.check.outputs.pending == 'true'
+        with:
+          name: npm-release-tarballs
+          path: ${{ runner.temp }}/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  notify:
+    needs: check
+    if: ${{ !cancelled() && needs.check.outputs.pending == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false # no dependency cache in release builds
+          node-version: 24
+      - name: Claude review and Discord notice
+        env:
+          RELEASE: ${{ needs.check.outputs.release }}
+          BUILD_OK: ${{ needs.check.result == 'success' }}
+          REVIEW_ACTOR: ${{ inputs.review-actor }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
+          CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
+        run: node .release-tools/scripts/notify.mjs
+
+  publish:
+    needs: check
+    if: needs.check.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: write # tags and GitHub releases
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      # Node 24 for npm >= 11.5.1 (trusted publishing), whatever node-version the build uses.
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false # no dependency cache in release builds
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tarballs
+          path: ${{ runner.temp }}/tarballs
+      - name: Publish and tag
+        env:
+          RELEASE: ${{ needs.check.outputs.release }}
+          GITHUB_RELEASE: ${{ inputs.github-release }}
+          GH_TOKEN: ${{ github.token }}
+        run: node .release-tools/scripts/publish.mjs --tarballs "$RUNNER_TEMP/tarballs"

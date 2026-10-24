@@ -1,0 +1,19 @@
+{
+  "name": "release-tools",
+  "private": true,
+  "description": "Reusable GitHub Actions workflow for npm releases with approval, and release helper packages.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test 'scripts/test/*.test.mjs' && npm test --workspaces",
+    "release:check": "node scripts/check.mjs",
+    "release:pack": "node scripts/pack.mjs",
+    "release:publish": "node scripts/publish.mjs"
+  }
+}

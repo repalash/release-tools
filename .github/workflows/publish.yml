@@ -1,0 +1,32 @@
+name: Publish to npm
+
+# Publishes each package in packages/* whose version is not on npm yet, after approval of the
+# npm-publish environment. Release a package: bump "version" in its package.json, add the matching
+# section to its CHANGELOG.md, merge to main. Tags: <name>-<version>.
+# npm trusted publisher of each package: repository repalash/release-tools, workflow publish.yml,
+# environment npm-publish.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push replaces a run that waits for approval.
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/npm-release.yml
+    with:
+      packages: packages/*
+      build: npm ci && npm test
+      require-changelog: true
+    secrets: inherit

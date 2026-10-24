@@ -1,0 +1,49 @@
+{
+  "name": "dts-js-extensions",
+  "version": "0.1.0",
+  "description": "Rewrites relative imports in emitted .d.ts files to explicit .js paths for moduleResolution node16/nodenext. A vite-plugin-dts afterBuild hook and a CLI for tsc output.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "bin": {
+    "dts-js-extensions": "./cli.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "cli.js",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.js'"
+  },
+  "keywords": [
+    "typescript",
+    "declarations",
+    "d.ts",
+    "esm",
+    "nodenext",
+    "node16",
+    "vite-plugin-dts",
+    "tsc"
+  ],
+  "author": "repalash <palash@shaders.app>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/repalash/release-tools.git",
+    "directory": "packages/dts-js-extensions"
+  },
+  "bugs": "https://github.com/repalash/release-tools/issues",
+  "homepage": "https://github.com/repalash/release-tools/tree/main/packages/dts-js-extensions#readme"
+}
