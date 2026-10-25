@@ -2,23 +2,19 @@
 
 Bump the version and push. You get a Discord message, you approve, and the package is on npm with provenance. No npm token is stored anywhere.
 
-```mermaid
-flowchart LR
-    push(["git push"]) --> check{"version<br>on npm?"}
-    check -- yes --> done(["nothing to do"])
-    check -- no --> build["build + pack"]
-    build -- ok --> notify["📦 Discord notice<br>🤖 Claude review"]
-    build -- fails --> failed["❌ Discord notice"]
-    notify --> approve(["you approve"])
-    approve --> publish["npm publish<br>+ provenance"]
-    publish --> tag["tag or<br>GitHub release"]
-```
+<img src="media/release-flow.webp" alt="Animation: git push, the version check on npm, build and pack, the Discord message with the approve link and a Claude review, the approval, npm publish with provenance, and the tag" width="100%">
 
 - **Version-driven**: a package is released when its `version` is not on npm yet. Any other push stops after the check.
 - **Approval first**: publishing waits for you on the `npm-publish` environment, and publishes the tarballs that were built and checked before.
 - **No npm tokens**: npm trusted publishing (OIDC), with a provenance statement for each version.
 - **One package or a monorepo**: a root package, a subfolder, or all npm workspaces in dependency order.
 - **Release notes**: the `CHANGELOG.md` section of the version becomes the GitHub release.
+
+## The flow
+
+<img src="media/release-flow-graph.png" alt="The seven steps: git push, check npm, build and pack, Discord asks you, you approve, npm publish with provenance and no npm token, tag" width="100%">
+
+A version that is already on npm ends the run after the check. A failed check, build or pack posts a ❌ notice instead, and nothing is published.
 
 ## Discord notice
 
