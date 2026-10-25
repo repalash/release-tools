@@ -1,200 +1,135 @@
 # release-tools
 
-Release tooling shared by npm package repositories:
+Bump the version and push. You get a Discord message, you approve, and the package is on npm with provenance. No npm token is stored anywhere.
 
-- [`.github/workflows/npm-release.yml`](.github/workflows/npm-release.yml): a reusable GitHub
-  Actions workflow. It publishes the packages whose version is not on npm yet, after a reviewer
-  approves the release. It works for one package and for npm workspaces.
-- [`dts-js-extensions`](packages/dts-js-extensions): an npm package that rewrites relative imports
-  in emitted `.d.ts` files to explicit `.js` paths, for `moduleResolution: node16 | nodenext`.
-
-## The release flow
-
-To release, bump `version` in `package.json` (and add the CHANGELOG section if required), then
-push to the release branch. Each push runs the workflow:
-
-1. **check**: lists the public packages whose `name@version` is not on npm, dependencies first.
-   With `require-changelog`, each needs a `CHANGELOG.md` section for its version. Then it runs
-   the `build` command, packs each package into a tarball, and keeps the tarballs as an artifact.
-   When every version is on npm, the run ends here.
-2. **notify** (optional): starts a Claude Code routine session that reviews the release, and posts
-   a Discord notice with the approval link, the review link and the commits since the previous
-   release. A failed check or build also gets a notice.
-3. **publish**: waits for approval of the `npm-publish` environment. Then it publishes each
-   tarball with npm trusted publishing and provenance, and tags the commit (or creates a GitHub
-   release with the tarball).
-
-## Usage
-
-### One package at the repository root
-
-```yaml
-# .github/workflows/publish.yml
-name: Publish to npm
-
-on:
-  push:
-    branches: [master]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: publish
-  cancel-in-progress: false
-
-jobs:
-  release:
-    permissions:
-      contents: write # tags and GitHub releases
-      id-token: write # npm trusted publishing
-    uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
-    with:
-      build: npm ci && npm test
-    secrets: inherit
+```mermaid
+flowchart LR
+    push(["git push"]) --> check{"version<br>on npm?"}
+    check -- yes --> done(["nothing to do"])
+    check -- no --> build["build + pack"]
+    build -- ok --> notify["📦 Discord notice<br>🤖 Claude review"]
+    build -- fails --> failed["❌ Discord notice"]
+    notify --> approve(["you approve"])
+    approve --> publish["npm publish<br>+ provenance"]
+    publish --> tag["tag or<br>GitHub release"]
 ```
 
-### One package in a subdirectory, with a GitHub release
+- **Version-driven**: a package is released when its `version` is not on npm yet. Any other push stops after the check.
+- **Approval first**: publishing waits for you on the `npm-publish` environment, and publishes the tarballs that were built and checked before.
+- **No npm tokens**: npm trusted publishing (OIDC), with a provenance statement for each version.
+- **One package or a monorepo**: a root package, a subfolder, or all npm workspaces in dependency order.
+- **Release notes**: the `CHANGELOG.md` section of the version becomes the GitHub release.
 
-```yaml
-    with:
-      packages: types/three
-      build: '' # no build step
-      github-release: true
-```
+## Discord notice
 
-### npm workspaces
+A release that waits for approval, or that fails, posts a message to your channel:
 
-```yaml
-    with:
-      packages: packages/*
-      build: npm ci && npm run build
-      require-changelog: true
-      tag-format: '{name}-{version}'
-```
+> 📦 repalash/ts-browser-helpers: **ts-browser-helpers@0.21.1** is built and waits for approval to publish to npm.<br>
+> Approve: https://github.com/repalash/ts-browser-helpers/actions/runs/…<br>
+> 🤖 Claude review: https://claude.ai/code/session_…<br>
+> <br>
+> \- `a1b2c3d` choose: default answer<br>
+> \- `e4f5a6b` docs: README
 
-Each public package below `packages/` whose version is not on npm is published, after the listed
-packages it depends on. Private packages are skipped. The `build` command must build every
-package that the released packages need, also the ones that are not released this time.
+> ❌ repalash/ts-browser-helpers: the check, build or pack of **ts-browser-helpers@0.21.1** failed; nothing is published.<br>
+> Log: https://github.com/repalash/ts-browser-helpers/actions/runs/…<br>
+> \- ts-browser-helpers@0.21.1: no CHANGELOG.md section
 
-More callers: [`examples/`](examples).
+The list shows the commits since the previous release of the package. The Claude review line appears when a Claude Code routine is set up: the workflow starts a session that reviews the release while it waits for you.
 
-### Inputs
+## Quick start
 
-| Input | Default | Description |
+1. Add the workflow, `.github/workflows/publish.yml`:
+
+   ```yaml
+   name: Publish to npm
+   on:
+     push:
+       branches: [master]
+     workflow_dispatch:
+   permissions:
+     contents: read
+   concurrency:
+     group: publish
+     cancel-in-progress: false # never cancel a publish half-way
+   jobs:
+     release:
+       permissions:
+         contents: write # tags and GitHub releases
+         id-token: write # npm trusted publishing
+       uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
+       with:
+         build: npm ci && npm test
+       secrets: inherit
+   ```
+
+2. Set up the repository once, before the first push: the `npm-publish` environment with you as required reviewer, the Discord and Claude secrets, and the npm trusted publisher. From a clone of this repository, one command does all three and is safe to run again:
+
+   ```sh
+   scripts/setup-repos.sh <owner>/<repo>:publish.yml:<npm-package>
+   ```
+
+3. Release: bump `version` in `package.json`, push, and open the link in Discord.
+
+More callers (a package in a subfolder, workspaces, GitHub releases): [`examples/`](examples).
+
+## Configuration
+
+| Input | Default | |
 |---|---|---|
-| `packages` | `.` | A package directory, or `<dir>/*` for every directory below `<dir>` that has a `package.json`. Separate several entries with spaces. |
-| `build` | `npm ci` | Shell command run at the repository root before packing. Empty: no build step. |
-| `node-version` | `24` | Node.js version for the build. The publish job always uses Node.js 24. |
-| `clean-package` | `false` | Pack with the package's [clean-package](https://www.npmjs.com/package/clean-package): `npm run prepack --if-present`, `clean-package`, `npm pack --ignore-scripts`, `clean-package restore`. clean-package usually removes `scripts`, so `npm pack` cannot run `prepack` itself. Without this input: plain `npm pack`. |
-| `require-changelog` | `false` | Fail when a package has no `CHANGELOG.md` section for its version. |
-| `tag-format` | see below | Release tag. `{name}` and `{version}` are replaced. |
-| `github-release` | `false` | Create a GitHub release with the tarball for each package, instead of a plain tag. A prerelease version gets a prerelease. |
-| `review-actor` | `repalash` | GitHub user whose pushes start the Claude review. Empty: never. |
+| `packages` | `.` | Package directory, or `<dir>/*` for every package below it. Several: separate with spaces. |
+| `build` | `npm ci` | Command run before packing. Empty: no build. |
+| `node-version` | `24` | Node.js for the build. |
+| `clean-package` | `false` | Pack with the package's [clean-package](https://www.npmjs.com/package/clean-package). |
+| `require-changelog` | `false` | Fail when the version has no `CHANGELOG.md` section. |
+| `tag-format` | `publish@{version}` | `{name}-{version}` when there are several packages. |
+| `github-release` | `false` | A GitHub release with the tarball instead of a plain tag. |
+| `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
 
-The default `tag-format` is `publish@{version}`. When `packages` has a `/*` entry or several
-entries, it is `{name}-{version}`, and a format without `{name}` is an error. The previous release
-tag of a package is the latest tag in that format reachable from the commit. For a format without
-`{name}`, `v1.2.3` tags also count.
-
-A CHANGELOG section starts at a heading (`#` to `###`) whose first word is the version:
-`## [1.2.3] - 2026-01-01`, `## v1.2.3`, `## 1.2.3`, `# [1.2.3](link) (date)`. An empty section
-counts as missing. The section becomes the notes of the GitHub release.
-
-A prerelease version (`1.0.0-beta.1`) is published with the dist-tag `next`, unless
-`publishConfig.tag` in its `package.json` sets another one.
-
-Output: `release`, the JSON of the release (`packages` is empty when nothing was pending).
-
-### Secrets
-
-All are optional. With `secrets: inherit` the workflow reads them from the calling repository.
-
-| Secret | Use |
+| Secret (optional) | |
 |---|---|
-| `DISCORD_WEBHOOK_URL` | Discord webhook for the notice. No notice when unset. |
-| `CLAUDE_REVIEW_FIRE_URL` | Fire URL of a Claude Code routine. The workflow POSTs the release facts (`{"text": …}`) and links the session it returns. |
-| `CLAUDE_REVIEW_TOKEN` | Bearer token of that routine. |
+| `DISCORD_WEBHOOK_URL` | Channel webhook for the notice. |
+| `CLAUDE_REVIEW_FIRE_URL`, `CLAUDE_REVIEW_TOKEN` | Fire URL and token of the Claude Code routine. |
 
-The review starts only when the build succeeded, the event is a `push`, the actor is
-`review-actor`, and both routine secrets are set.
+To rotate one secret in several repositories: `scripts/setup-repos.sh --set-secret CLAUDE_REVIEW_TOKEN <owner>/<repo> ...`
 
-## Repository setup
+<details>
+<summary><b>Details</b>: tags, changelog, prereleases, setup by hand, security</summary>
 
-`scripts/setup-repos.sh` does steps 1 to 3 for several repositories at once. It checks first and
-skips what is set, asks for each secret value once (hidden), and runs `npm trust github` in your
-terminal. It needs `gh` with admin rights on the repositories, `jq`, and `npm` logged in:
+### Tags and changelog
 
-```sh
-scripts/setup-repos.sh <owner>/<repo>:<calling-workflow-file>:<package>[,<package>] ...
-```
+- With a `/*` entry or several entries in `packages`, the tag format must contain `{name}`. The previous release is the latest tag in that format reachable from the commit. For a format without `{name}`, `v1.2.3` tags also count.
+- A CHANGELOG section starts at a heading (`#` to `###`) whose first word is the version: `## [1.2.3] - 2026-01-01`, `## v1.2.3`, `# [1.2.3](link) (date)`. An empty section counts as missing.
+- A prerelease (`1.0.0-beta.1`) gets the dist-tag `next`, unless `publishConfig.tag` sets another one, and a prerelease GitHub release.
+- In workspaces, private packages are skipped, and `build` must build every package that the released ones need.
+- Output: `release`, the JSON of the release (`packages` is empty when nothing was pending).
 
-The steps, by hand, once per calling repository:
+### Setup by hand
 
-1. Create the environment `npm-publish` and add yourself as a required reviewer:
-   `https://github.com/<owner>/<repo>/settings/environments`. Do this before the first run:
-   GitHub creates a missing environment on first use without protection rules, so the check job
-   stops when `npm-publish` has no required reviewer (reading the environment works with the
-   default token in public repositories).
-2. Optional: add the secrets above at `https://github.com/<owner>/<repo>/settings/secrets/actions`.
-3. Add a trusted publisher on npmjs.com for each package
-   (`https://www.npmjs.com/package/<name>/access`):
+1. Create the environment `npm-publish` with you as required reviewer: `https://github.com/<owner>/<repo>/settings/environments`. Do it before the first run: GitHub creates a missing environment without protection, so the check job stops when `npm-publish` has no required reviewer.
+2. Optional: add the secrets at `https://github.com/<owner>/<repo>/settings/secrets/actions`.
+3. Add a trusted publisher at `https://www.npmjs.com/package/<name>/access`: GitHub Actions, `<owner>`, `<repo>`, the file name of the **calling** workflow (for example `publish.yml`, not `npm-release.yml`), environment `npm-publish`.
 
-   | Field | Value |
-   |---|---|
-   | Publisher | GitHub Actions |
-   | Organization or user | `<owner>` |
-   | Repository | `<repo>` |
-   | Workflow filename | the file name of the **calling** workflow, for example `publish.yml` |
-   | Environment | `npm-publish` |
+The calling job must grant `contents: write` and `id-token: write`: a called workflow cannot get more permissions than its caller. With `cancel-in-progress: false`, runs queue: a newer run waits until the one before it is approved, rejected or cancelled. The tarballs are kept for 14 days, the window for the approval. A publish job can run again: a version that is on npm is not published again, and an existing tag on the same commit is kept.
 
-   npm checks the name of the calling workflow, not `npm-release.yml`. When a repository moves to
-   this workflow, keep the file name of its current publish workflow, or update the trusted
-   publisher.
-4. Grant `contents: write` and `id-token: write` to the calling job, as in the examples. A called
-   workflow cannot get more permissions than its caller.
-5. Use a concurrency group with `cancel-in-progress: false` in the calling workflow. With `true`, a
-   newer push cancels the running publish job too, possibly between `npm publish` and the tag.
-   With `false` the runs queue: a newer run waits until the one before it is approved, rejected or
-   cancelled by hand. The tarball artifact is kept for 14 days, the window for the approval.
+### Security
 
-The publish job can run again: a version that is on npm is not published again, and an existing
-tag on the same commit is kept. A run that is cancelled during the publish job can thus be re-run.
+- The check job runs your build with no secrets and a read-only token, and stops when `npm-publish` has no required reviewer.
+- The notify job holds the secrets and runs only the scripts of this repository, never your code.
+- The publish job runs only the scripts of this repository and publishes the checked tarballs with `npm publish --ignore-scripts`.
+- Pin callers to a tag (`@v1`) or a commit SHA. The jobs check out these scripts at the commit of the called workflow (`job.workflow_repository`, `job.workflow_sha`), so the workflow and its scripts always match. These contexts are not available on GitHub Enterprise Server.
 
-## Versioning of this workflow
+### Development
 
-Pin the workflow in callers to a tag (`@v1`) or a full commit SHA. The jobs check out the scripts
-of this repository at the commit of the called workflow file (the `job.workflow_repository` and
-`job.workflow_sha` contexts), so the workflow and its scripts always match. These contexts are not
-available on GitHub Enterprise Server.
+`npm install && npm test`. [actionlint](https://github.com/rhysd/actionlint) checks the workflows; `.github/actionlint.yaml` ignores its messages about `job.workflow_repository` and `job.workflow_sha`, which version 1.7.12 does not know yet. The scripts also run locally: `npm run release:check -- --root ../my-repo --packages 'packages/*'`.
 
-## Security
+</details>
 
-- The check job runs the caller's build. It gets no secrets, and its token is read-only. It fails
-  before the build when `npm-publish` has no required reviewer, so nothing is published without
-  approval.
-- The notify job holds the secrets. It runs only the scripts of this repository and does not check
-  out the caller's code.
-- The publish job runs only the scripts of this repository. It publishes the tarballs from the
-  check job with `npm publish --ignore-scripts`.
+## Also in this repository
 
-## Development
+[`dts-js-extensions`](packages/dts-js-extensions): rewrites relative imports in emitted `.d.ts` files to explicit `.js` paths, for `moduleResolution: node16 | nodenext`.
 
-```sh
-npm install
-npm test
-```
-
-[actionlint](https://github.com/rhysd/actionlint) checks the workflows. Version 1.7.12 does not
-know `job.workflow_repository` and `job.workflow_sha` yet; `.github/actionlint.yaml` ignores those
-two messages for `npm-release.yml`.
-
-The scripts can run outside GitHub Actions, for example against another checkout:
-
-```sh
-npm run release:check -- --root ../my-repo --packages 'packages/*' --require-changelog
-```
+Used by [ts-browser-helpers](https://github.com/repalash/ts-browser-helpers), [uiconfig.js](https://github.com/repalash/uiconfig.js), [three-ts-types](https://github.com/repalash/three-ts-types), [three.js-modded](https://github.com/repalash/three.js-modded) and [tweakpane-image-plugin](https://github.com/repalash/tweakpane-image-plugin).
 
 ## License
 

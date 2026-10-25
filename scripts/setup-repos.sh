@@ -15,20 +15,26 @@
 # Usage: scripts/setup-repos.sh [--replace-secrets] [--skip-trust] <spec>...
 #   spec = owner/repo:workflow-file:package[,package...]
 #   e.g.   scripts/setup-repos.sh repalash/ts-browser-helpers:publish.yml:ts-browser-helpers
+#
+# Rotate one secret (asked once, stored in every repository given; nothing else is changed):
+#        scripts/setup-repos.sh --set-secret CLAUDE_REVIEW_TOKEN owner/repo [owner/repo...]
 set -euo pipefail
 
 REPLACE_SECRETS=false
 SKIP_TRUST=false
+SET_SECRET=''
 SPECS=()
-for a in "$@"; do
-    case "$a" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --replace-secrets) REPLACE_SECRETS=true ;;
         --skip-trust) SKIP_TRUST=true ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
-        *) SPECS+=("$a") ;;
+        --set-secret) SET_SECRET="${2:-}"; shift ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        *) SPECS+=("$1") ;;
     esac
+    shift
 done
-[ ${#SPECS[@]} -gt 0 ] || { sed -n '2,19p' "$0"; exit 2; }
+[ ${#SPECS[@]} -gt 0 ] || { sed -n '2,20p' "$0"; exit 2; }
 
 for tool in gh jq; do command -v "$tool" > /dev/null || { echo "missing: $tool"; exit 1; }; done
 gh auth status > /dev/null 2>&1 || { echo "gh is not logged in: run 'gh auth login'"; exit 1; }
@@ -53,6 +59,19 @@ ask() { # ask NAME: reads a secret value once, hidden
         printf -v "$var" '%s' "$v"
     fi
 }
+
+if [ -n "$SET_SECRET" ]; then
+    case " ${SECRETS[*]} " in *" $SET_SECRET "*) ;; *) echo "unknown secret: $SET_SECRET (one of: ${SECRETS[*]})"; exit 2 ;; esac
+    ask "$SET_SECRET"
+    var="VAL_$SET_SECRET"
+    [ -n "${!var}" ] || { echo "empty value: nothing changed"; exit 1; }
+    for spec in "${SPECS[@]}"; do
+        repo=${spec%%:*}
+        printf '%s' "${!var}" | gh secret set "$SET_SECRET" -R "$repo" > /dev/null
+        echo "$repo: secret $SET_SECRET stored"
+    done
+    exit 0
+fi
 
 TRUST_CMDS=()
 for spec in "${SPECS[@]}"; do
