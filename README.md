@@ -133,7 +133,10 @@ scripts/setup-repos.sh <owner>/<repo>:<calling-workflow-file>:<package>[,<packag
 The steps, by hand, once per calling repository:
 
 1. Create the environment `npm-publish` and add yourself as a required reviewer:
-   `https://github.com/<owner>/<repo>/settings/environments`.
+   `https://github.com/<owner>/<repo>/settings/environments`. Do this before the first run:
+   GitHub creates a missing environment on first use without protection rules, so the check job
+   stops when `npm-publish` has no required reviewer (reading the environment works with the
+   default token in public repositories).
 2. Optional: add the secrets above at `https://github.com/<owner>/<repo>/settings/secrets/actions`.
 3. Add a trusted publisher on npmjs.com for each package
    (`https://www.npmjs.com/package/<name>/access`):
@@ -168,7 +171,9 @@ available on GitHub Enterprise Server.
 
 ## Security
 
-- The check job runs the caller's build. It gets no secrets, and its token is read-only.
+- The check job runs the caller's build. It gets no secrets, and its token is read-only. It fails
+  before the build when `npm-publish` has no required reviewer, so nothing is published without
+  approval.
 - The notify job holds the secrets. It runs only the scripts of this repository and does not check
   out the caller's code.
 - The publish job runs only the scripts of this repository. It publishes the tarballs from the

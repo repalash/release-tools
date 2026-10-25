@@ -102,6 +102,21 @@ jobs:
           TAG_FORMAT: ${{ inputs.tag-format }}
           REQUIRE_CHANGELOG: ${{ inputs.require-changelog }}
         run: node "$RUNNER_TEMP/release-tools/scripts/check.mjs"
+      # GitHub creates a missing environment on first use, without protection rules: the publish
+      # job would then run without approval. Stop before the build when npm-publish has no
+      # required reviewer.
+      - name: Check that npm-publish requires a reviewer
+        if: steps.check.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          n=$(gh api "repos/$REPOSITORY/environments/npm-publish" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length' 2> /dev/null) || n=0
+          if [ "$n" = 0 ]; then
+            echo "::error::The npm-publish environment of $REPOSITORY is missing or has no required reviewer. Set it up first: https://github.com/repalash/release-tools#repository-setup"
+            exit 1
+          fi
+          echo "npm-publish requires a reviewer."
       - name: Build
         if: steps.check.outputs.pending == 'true' && inputs.build != ''
         env:
