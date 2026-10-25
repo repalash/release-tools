@@ -42,7 +42,7 @@ permissions:
 
 concurrency:
   group: publish
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -151,8 +151,10 @@ The steps, by hand, once per calling repository:
    publisher.
 4. Grant `contents: write` and `id-token: write` to the calling job, as in the examples. A called
    workflow cannot get more permissions than its caller.
-5. Pick a concurrency group in the calling workflow. `cancel-in-progress: true` lets a newer push
-   replace a run that waits for approval; `false` queues the runs.
+5. Use a concurrency group with `cancel-in-progress: false` in the calling workflow. With `true`, a
+   newer push cancels the running publish job too, possibly between `npm publish` and the tag.
+   With `false` the runs queue: a newer run waits until the one before it is approved, rejected or
+   cancelled by hand. The tarball artifact is kept for 14 days, the window for the approval.
 
 The publish job can run again: a version that is on npm is not published again, and an existing
 tag on the same commit is kept. A run that is cancelled during the publish job can thus be re-run.

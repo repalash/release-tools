@@ -119,7 +119,7 @@ jobs:
           name: npm-release-tarballs
           path: ${{ runner.temp }}/tarballs/*.tgz
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14 # the approval of npm-publish can take days
           overwrite: true
 
   notify:
