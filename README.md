@@ -1,12 +1,29 @@
 # release-tools
 
-Release tooling shared by npm package repositories:
+Publish npm packages from GitHub Actions by bumping a version and pushing. A reviewer approves each release, npm gets it with provenance, and no npm token is stored anywhere.
 
-- [`.github/workflows/npm-release.yml`](.github/workflows/npm-release.yml): a reusable GitHub
-  Actions workflow. It publishes the packages whose version is not on npm yet, after a reviewer
-  approves the release. It works for one package and for npm workspaces.
-- [`dts-js-extensions`](packages/dts-js-extensions): an npm package that rewrites relative imports
-  in emitted `.d.ts` files to explicit `.js` paths, for `moduleResolution: node16 | nodenext`.
+```yaml
+jobs:
+  release:
+    permissions: {contents: write, id-token: write}
+    uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
+    secrets: inherit
+```
+
+## Features
+
+- **Version-driven.** A package is released when its `version` is not on npm yet. Any other push ends after a quick check, so the workflow can run on every push to the release branch.
+- **Approval before publish.** The publish job waits for a reviewer on the `npm-publish` environment. The tarballs that the reviewer approves are the ones built and checked before.
+- **No npm tokens.** Publishing uses npm trusted publishing (OIDC), and every version gets a provenance statement.
+- **One package or many.** It handles a package at the root, in a subfolder, or every package of npm workspaces, published in dependency order.
+- **Changelog-aware.** It can require a `CHANGELOG.md` section for each version, and it uses that section as the notes of the GitHub release.
+- **Release notice.** A Discord message links the approval page, the commits since the previous release and an optional Claude Code review of the release.
+- **Separated jobs.** The job that runs your build has no secrets. The jobs that hold secrets or publish never run your code. A failed or cancelled publish can run again safely.
+- **Setup script.** `scripts/setup-repos.sh` sets up the environment, the secrets and the npm trusted publishers for several repositories at once.
+
+The repository also holds [`dts-js-extensions`](packages/dts-js-extensions), an npm package that rewrites relative imports in emitted `.d.ts` files to explicit `.js` paths, for `moduleResolution: node16 | nodenext`.
+
+Used by [ts-browser-helpers](https://github.com/repalash/ts-browser-helpers), [uiconfig.js](https://github.com/repalash/uiconfig.js), [three-ts-types](https://github.com/repalash/three-ts-types), [three.js-modded](https://github.com/repalash/three.js-modded) and [tweakpane-image-plugin](https://github.com/repalash/tweakpane-image-plugin).
 
 ## The release flow
 
@@ -128,6 +145,12 @@ terminal. It needs `gh` with admin rights on the repositories, `jq`, and `npm` l
 
 ```sh
 scripts/setup-repos.sh <owner>/<repo>:<calling-workflow-file>:<package>[,<package>] ...
+```
+
+To rotate one secret in several repositories, without other changes:
+
+```sh
+scripts/setup-repos.sh --set-secret CLAUDE_REVIEW_TOKEN <owner>/<repo> <owner>/<repo> ...
 ```
 
 The steps, by hand, once per calling repository:
