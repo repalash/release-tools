@@ -52,7 +52,7 @@ async function startReview () {
 const session = await startReview()
 
 if (!env.DISCORD_WEBHOOK_URL) {
-    console.log('DISCORD_WEBHOOK_URL is not set; no notice.')
+    console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')
     process.exit(0)
 }
 const content = discordText({ok: buildOk, repository: release.repository, runUrl: release.runUrl, packages: release.packages, errors: release.errors, session})
