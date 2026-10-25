@@ -36,6 +36,14 @@ ME=$(gh api user --jq .login)
 MY_ID=$(gh api user --jq .id)
 echo "gh user: $ME"
 
+# Number of required-reviewer entries for $ME on npm-publish (0 when the environment does not exist).
+reviewer_count() {
+    local n
+    n=$(gh api "repos/$1/environments/npm-publish" --jq "[.protection_rules[]? | select(.type == \"required_reviewers\") | .reviewers[]? | select(.reviewer.login == \"$ME\")] | length" 2> /dev/null) || n=0
+    case "$n" in ''|*[!0-9]*) echo 0 ;; *) echo "$n" ;; esac
+}
+FAILED=false
+
 SECRETS=(DISCORD_WEBHOOK_URL CLAUDE_REVIEW_FIRE_URL CLAUDE_REVIEW_TOKEN)
 # Values are kept in VAL_<NAME> (no associative arrays: macOS ships bash 3.2).
 ask() { # ask NAME: reads a secret value once, hidden
@@ -53,13 +61,18 @@ for spec in "${SPECS[@]}"; do
     echo
     echo "== $repo"
 
-    # 1. environment npm-publish with a required reviewer
-    if gh api "repos/$repo/environments/npm-publish" --jq '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[].reviewer.login] | index("'"$ME"'")' 2> /dev/null | grep -qv null; then
+    # 1. environment npm-publish with a required reviewer (checked again after the change)
+    if [ "$(reviewer_count "$repo")" -gt 0 ]; then
         echo "  npm-publish: $ME is a required reviewer"
     else
         jq -n --argjson id "$MY_ID" '{reviewers: [{type: "User", id: $id}]}' \
             | gh api -X PUT "repos/$repo/environments/npm-publish" --input - > /dev/null
-        echo "  npm-publish: set $ME as required reviewer"
+        if [ "$(reviewer_count "$repo")" -gt 0 ]; then
+            echo "  npm-publish: set $ME as required reviewer"
+        else
+            echo "  npm-publish: ERROR: $ME is still not a required reviewer; set it at https://github.com/$repo/settings/environments"
+            FAILED=true
+        fi
     fi
 
     # 2. repository secrets
@@ -85,6 +98,8 @@ for spec in "${SPECS[@]}"; do
         TRUST_CMDS+=("npm trust github $p --file $workflow --repo $repo --env npm-publish --allow-publish --allow-stage-publish --yes")
     done
 done
+
+if [ "$FAILED" = true ]; then echo; echo "Some steps failed: see the ERROR lines above."; fi
 
 echo
 echo "== npm trusted publishers"
