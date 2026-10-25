@@ -122,7 +122,15 @@ The review starts only when the build succeeded, the event is a `push`, the acto
 
 ## Repository setup
 
-Do these steps once per calling repository:
+`scripts/setup-repos.sh` does steps 1 to 3 for several repositories at once. It checks first and
+skips what is set, asks for each secret value once (hidden), and runs `npm trust github` in your
+terminal. It needs `gh` with admin rights on the repositories, `jq`, and `npm` logged in:
+
+```sh
+scripts/setup-repos.sh <owner>/<repo>:<calling-workflow-file>:<package>[,<package>] ...
+```
+
+The steps, by hand, once per calling repository:
 
 1. Create the environment `npm-publish` and add yourself as a required reviewer:
    `https://github.com/<owner>/<repo>/settings/environments`.
