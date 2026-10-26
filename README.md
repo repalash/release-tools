@@ -59,6 +59,20 @@ The list shows the commits since the previous release of the package. The Claude
        secrets: inherit
    ```
 
+   `secrets: inherit` works when your repository and release-tools have the same owner. In a repository of another account or organization, pass the secrets by name, and set `review-actor` to your GitHub user (the default is `repalash`):
+
+   ```yaml
+       with:
+         build: npm ci && npm test
+         review-actor: <your-github-user>
+       secrets:
+         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+         CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
+         CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
+   ```
+
+   Without the secrets the release still works, with no Discord notice and no review.
+
 2. Set up the repository once, before the first push: the `npm-publish` environment with you as required reviewer, the Discord and Claude secrets, and the npm trusted publisher. From a clone of this repository, one command does all three and is safe to run again:
 
    ```sh
