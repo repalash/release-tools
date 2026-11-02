@@ -312,17 +312,13 @@ export function setOutputs (values) {
 
 /** Parses the RELEASE JSON that check.mjs writes. */
 export function parseRelease (json) {
-    const release = JSON.parse(json || '{}')
+    if (!json) throw new Error('the release JSON is missing (RELEASE_FILE or RELEASE)')
+    const release = JSON.parse(json)
     if (!Array.isArray(release.packages)) throw new Error('RELEASE has no packages array')
     return release
 }
 
-/**
- * The release JSON as text: the file RELEASE_FILE when it exists, else env RELEASE. The workflow
- * passes it between jobs as an artifact, because GitHub drops a job output that contains a masked
- * value (a changelog that mentions a string the runner masks), and the job output would be empty.
- * @returns {string} '' when there is neither
- */
+/** The release JSON text: the file RELEASE_FILE when it exists, else env RELEASE, else ''. */
 export function readRelease (env = process.env) {
     if (env.RELEASE_FILE && fs.existsSync(env.RELEASE_FILE)) return fs.readFileSync(env.RELEASE_FILE, 'utf8')
     return env.RELEASE || ''
@@ -334,8 +330,7 @@ export function readRelease (env = process.env) {
  * @returns {string} at most 2000 characters (the Discord limit)
  */
 export function failureText ({step, error = '', env = process.env}) {
-    const repository = env.GITHUB_REPOSITORY || 'the repository'
-    const runUrl = `${env.GITHUB_SERVER_URL || 'https://github.com'}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
-    const text = `❌ ${repository}: the release ${step} failed${error ? `: ${error}` : ''}\nLog: ${runUrl}`
+    const {GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID} = env
+    const text = `❌ ${GITHUB_REPOSITORY}: the release ${step} failed${error ? `: ${error}` : ''}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
     return text.length > 2000 ? text.slice(0, 1990) + '\n…' : text
 }

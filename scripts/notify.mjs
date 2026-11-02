@@ -10,6 +10,7 @@
 //
 // Env: RELEASE_FILE or RELEASE (JSON from check.mjs), BUILD_OK ('true'), REVIEW_ACTOR, DISCORD_WEBHOOK_URL,
 // CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the GitHub Actions defaults.
+import {parseArgs} from 'node:util'
 import {discordText, failureText, firePayload, parseRelease, readRelease, reviewEligible, reviewText} from './lib.mjs'
 
 const env = process.env
@@ -78,13 +79,13 @@ async function notify () {
     console.log('Discord notice sent.')
 }
 
-const failedAt = process.argv.indexOf('--failed')
+const {values: args} = parseArgs({options: {failed: {type: 'string'}}})
 try {
-    if (failedAt < 0) await notify()
-    else if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: process.argv[failedAt + 1] || 'run'}))
+    if (!args.failed) await notify()
+    else if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: args.failed}))
 } catch (e) {
     console.error(e)
-    if (failedAt < 0 && env.DISCORD_WEBHOOK_URL) {
+    if (!args.failed && env.DISCORD_WEBHOOK_URL) {
         await postDiscord(failureText({step: 'notice', error: e.message})).catch(e2 => console.error(e2.message))
     }
     process.exit(1)

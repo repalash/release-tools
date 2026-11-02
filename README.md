@@ -117,7 +117,7 @@ To rotate one secret in several repositories: `scripts/setup-repos.sh --set-secr
 - A CHANGELOG section starts at a heading (`#` to `###`) whose first word is the version: `## [1.2.3] - 2026-01-01`, `## v1.2.3`, `# [1.2.3](link) (date)`. An empty section counts as missing.
 - A prerelease (`1.0.0-beta.1`) gets the dist-tag `next`, unless `publishConfig.tag` sets another one, and a prerelease GitHub release.
 - In workspaces, private packages are skipped, and `build` must build every package that the released ones need.
-- Output: `release`, the JSON of the release (`packages` is empty when nothing was pending). The jobs of the workflow pass it to each other as the artifact `npm-release-plan`, uploaded before your build: GitHub empties a job output that contains a string it masks, and a changelog can mention one. The `release` output can be empty for that reason.
+- Output: `release`, the JSON of the release (`packages` is empty when nothing was pending). GitHub empties a job output that contains a string it masks, which a changelog can mention, so the jobs of the workflow pass the JSON as the artifact `npm-release-plan` instead, and `release` can be empty.
 
 ### Setup by hand
 

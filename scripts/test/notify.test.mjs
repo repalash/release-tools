@@ -101,7 +101,7 @@ test('an error is posted to Discord, then fails the step (here: the release outp
     try {
         await assert.rejects(run(process.execPath, [script], {env: env(s.base, {...gh, RELEASE: ''})}), {code: 1})
         assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
-        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release notice failed: RELEASE has no packages array\nLog: https://github.com/owner/repo/actions/runs/7')
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release notice failed: the release JSON is missing (RELEASE_FILE or RELEASE)\nLog: https://github.com/owner/repo/actions/runs/7')
     } finally {
         s.close()
     }
