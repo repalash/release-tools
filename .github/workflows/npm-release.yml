@@ -8,10 +8,12 @@ name: npm release
 #   check    lists the packages to publish (public, version not on npm, build order), checks their
 #            CHANGELOG sections (require-changelog), runs `build`, packs each package, and uploads
 #            the tarballs. Runs the caller's code; has no secrets.
-#   notify   starts the Claude review routine and posts the Discord notice. Runs only the scripts
-#            of this repository; it has the secrets and never runs the caller's code.
+#   notify   starts the Claude review routine and posts the Discord notice, or that the check
+#            failed. Runs only the scripts of this repository; it has the secrets and never runs
+#            the caller's code.
 #   publish  environment npm-publish: publishes the tarballs with provenance (npm trusted
-#            publishing), then creates a tag or a GitHub release per package.
+#            publishing), then creates a tag or a GitHub release per package. Posts to Discord
+#            when it fails.
 #
 # The jobs check out the scripts of this repository at the commit of this workflow file
 # (job.workflow_repository, job.workflow_sha), so a caller pinned to a tag or commit runs the
@@ -139,7 +141,8 @@ jobs:
 
   notify:
     needs: check
-    if: ${{ !cancelled() && needs.check.outputs.pending == 'true' }}
+    # also when the check job failed before it knew what to publish, to post that it failed
+    if: ${{ !cancelled() && (needs.check.outputs.pending == 'true' || needs.check.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -199,3 +202,8 @@ jobs:
           GITHUB_RELEASE: ${{ inputs.github-release }}
           GH_TOKEN: ${{ github.token }}
         run: node .release-tools/scripts/publish.mjs --tarballs "$RUNNER_TEMP/tarballs"
+      - name: Discord notice of a failed publish
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: node .release-tools/scripts/notify.mjs --failed publish

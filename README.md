@@ -31,6 +31,11 @@ A release that waits for approval, or that fails, posts a message to your channe
 > Log: https://github.com/repalash/ts-browser-helpers/actions/runs/…<br>
 > \- ts-browser-helpers@0.21.1: no CHANGELOG.md section
 
+Any other failure of a release step (the check script, the notice itself, the publish after approval) posts the error with the log link:
+
+> ❌ repalash/ts-browser-helpers: the release publish failed<br>
+> Log: https://github.com/repalash/ts-browser-helpers/actions/runs/…
+
 The list shows the commits since the previous release of the package. The Claude review line appears when a Claude Code routine is set up: the workflow starts a session that reviews the release while it waits for you.
 
 ## Quick start

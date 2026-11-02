@@ -316,3 +316,15 @@ export function parseRelease (json) {
     if (!Array.isArray(release.packages)) throw new Error('RELEASE has no packages array')
     return release
 }
+
+/**
+ * The Discord notice for a release step that failed without its own notice: the check script, the
+ * notice itself, or the publish after approval. Reads only the GitHub Actions defaults, not RELEASE.
+ * @returns {string} at most 2000 characters (the Discord limit)
+ */
+export function failureText ({step, error = '', env = process.env}) {
+    const repository = env.GITHUB_REPOSITORY || 'the repository'
+    const runUrl = `${env.GITHUB_SERVER_URL || 'https://github.com'}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
+    const text = `❌ ${repository}: the release ${step} failed${error ? `: ${error}` : ''}\nLog: ${runUrl}`
+    return text.length > 2000 ? text.slice(0, 1990) + '\n…' : text
+}

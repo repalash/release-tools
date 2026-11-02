@@ -91,3 +91,38 @@ test('another actor gets no review; no webhook means no notice', async () => {
         s.close()
     }
 })
+
+const gh = {GITHUB_REPOSITORY: 'owner/repo', GITHUB_SERVER_URL: 'https://github.com', GITHUB_RUN_ID: '7'}
+
+test('an error is posted to Discord, then fails the step (here: the release output is empty)', async () => {
+    const s = await server()
+    try {
+        await assert.rejects(run(process.execPath, [script], {env: env(s.base, {...gh, RELEASE: ''})}), {code: 1})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release notice failed: RELEASE has no packages array\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
+
+test('a check that failed before listing the packages gets a notice', async () => {
+    const s = await server()
+    try {
+        await run(process.execPath, [script], {env: env(s.base, {...gh, RELEASE: '', BUILD_OK: 'false'})})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release check failed\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
+
+test('--failed publish posts that the publish failed', async () => {
+    const s = await server()
+    try {
+        await run(process.execPath, [script, '--failed', 'publish'], {env: {PATH: process.env.PATH, ...gh, DISCORD_WEBHOOK_URL: `${s.base}/discord`}})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release publish failed\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
