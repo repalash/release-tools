@@ -314,7 +314,7 @@ export function setOutputs (values) {
 export function parseRelease (json) {
     if (!json) throw new Error('the release JSON is missing (RELEASE_FILE or RELEASE)')
     const release = JSON.parse(json)
-    if (!Array.isArray(release.packages)) throw new Error('RELEASE has no packages array')
+    if (!Array.isArray(release.packages)) throw new Error('the release JSON has no packages array')
     return release
 }
 
@@ -331,6 +331,7 @@ export function readRelease (env = process.env) {
  */
 export function failureText ({step, error = '', env = process.env}) {
     const {GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID} = env
-    const text = `❌ ${GITHUB_REPOSITORY}: the release ${step} failed${error ? `: ${error}` : ''}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
-    return text.length > 2000 ? text.slice(0, 1990) + '\n…' : text
+    // the error is cut, not the log link
+    const detail = error.length > 1500 ? `: ${error.slice(0, 1500)}…` : error ? `: ${error}` : ''
+    return `❌ ${GITHUB_REPOSITORY}: the release ${step} failed${detail}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
 }

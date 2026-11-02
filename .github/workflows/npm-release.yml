@@ -144,7 +144,7 @@ jobs:
       - name: Pack
         if: steps.check.outputs.pending == 'true'
         env:
-          RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
+          RELEASE: ${{ steps.check.outputs.release }} # a step output: the build cannot change it
           CLEAN_PACKAGE: ${{ inputs.clean-package }}
         run: node "$RUNNER_TEMP/release-tools/scripts/pack.mjs" --out "$RUNNER_TEMP/tarballs"
       - uses: actions/upload-artifact@v7

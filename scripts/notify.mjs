@@ -83,6 +83,7 @@ const {values: args} = parseArgs({options: {failed: {type: 'string'}}})
 try {
     if (!args.failed) await notify()
     else if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: args.failed}))
+    else console.log(`::warning::DISCORD_WEBHOOK_URL is not set; no notice that the ${args.failed} failed.`)
 } catch (e) {
     console.error(e)
     if (!args.failed && env.DISCORD_WEBHOOK_URL) {

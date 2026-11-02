@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, discordText, distTag, firePayload, formatTag, isMultiPackageInput,
-    isPrerelease, parsePackagesInput, readPackages, readRelease, reviewEligible, reviewText, sortByDependencies,
+    failureText, isPrerelease, parsePackagesInput, readPackages, readRelease, reviewEligible, reviewText, sortByDependencies,
     splitCommit, tagMatchPatterns, tarballName, validateTagFormat,
 } from '../lib.mjs'
 
@@ -217,4 +217,11 @@ test('readRelease: the file RELEASE_FILE first, else env RELEASE', () => {
     assert.equal(readRelease({RELEASE_FILE: file, RELEASE: '{"packages":[2]}'}), '{"packages":[1]}')
     assert.equal(readRelease({RELEASE_FILE: path.join(root, 'missing.json'), RELEASE: '{"packages":[2]}'}), '{"packages":[2]}')
     assert.equal(readRelease({}), '')
+})
+
+test('failureText cuts a long error and keeps the log link', () => {
+    const env = {GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '7'}
+    const text = failureText({step: 'notice', error: 'x'.repeat(5000), env})
+    assert.ok(text.length <= 2000)
+    assert.ok(text.endsWith('…\nLog: https://github.com/o/r/actions/runs/7'))
 })
