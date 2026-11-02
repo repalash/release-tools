@@ -4,6 +4,8 @@ import http from 'node:http'
 import path from 'node:path'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
+import fs from 'node:fs'
+import os from 'node:os'
 
 const script = path.join(import.meta.dirname, '..', 'notify.mjs')
 const run = promisify(execFile)
@@ -124,5 +126,20 @@ test('--failed publish posts that the publish failed', async () => {
         assert.equal(s.requests[0].body.content, '❌ owner/repo: the release publish failed\nLog: https://github.com/owner/repo/actions/runs/7')
     } finally {
         s.close()
+    }
+})
+
+test('reads the release from RELEASE_FILE (the artifact), also when the job output was dropped', async () => {
+    const s = await server()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'))
+    try {
+        const file = path.join(dir, 'release.json')
+        fs.writeFileSync(file, JSON.stringify({...release, packages: [{...release.packages[0], changelog: 'Bearer not-set is refused'}]}))
+        await run(process.execPath, [script], {env: env(s.base, {RELEASE: '', RELEASE_FILE: file, CLAUDE_REVIEW_FIRE_URL: ''})})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.match(s.requests[0].body.content, /\*\*pkg@1\.0\.1\*\* is built and waits for approval/)
+    } finally {
+        s.close()
+        fs.rmSync(dir, {recursive: true, force: true})
     }
 })

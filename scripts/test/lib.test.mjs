@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, discordText, distTag, firePayload, formatTag, isMultiPackageInput,
-    isPrerelease, parsePackagesInput, readPackages, reviewEligible, reviewText, sortByDependencies,
+    isPrerelease, parsePackagesInput, readPackages, readRelease, reviewEligible, reviewText, sortByDependencies,
     splitCommit, tagMatchPatterns, tarballName, validateTagFormat,
 } from '../lib.mjs'
 
@@ -209,4 +209,12 @@ test('reviewEligible', () => {
     assert.equal(reviewEligible({...base, event: 'workflow_dispatch'}).fire, false)
     assert.equal(reviewEligible({...base, actor: 'someone'}).fire, false)
     assert.equal(reviewEligible({...base, reviewActor: '', actor: ''}).fire, false)
+})
+
+test('readRelease: the file RELEASE_FILE first, else env RELEASE', () => {
+    const root = repo({'release.json': '{"packages":[1]}'})
+    const file = path.join(root, 'release.json')
+    assert.equal(readRelease({RELEASE_FILE: file, RELEASE: '{"packages":[2]}'}), '{"packages":[1]}')
+    assert.equal(readRelease({RELEASE_FILE: path.join(root, 'missing.json'), RELEASE: '{"packages":[2]}'}), '{"packages":[2]}')
+    assert.equal(readRelease({}), '')
 })

@@ -8,9 +8,9 @@
 // `--failed <step>`: only posts that the release <step> failed, for the jobs that have no notice of
 // their own (the workflow runs it when such a job fails).
 //
-// Env: RELEASE (JSON from check.mjs), BUILD_OK ('true'), REVIEW_ACTOR, DISCORD_WEBHOOK_URL,
+// Env: RELEASE_FILE or RELEASE (JSON from check.mjs), BUILD_OK ('true'), REVIEW_ACTOR, DISCORD_WEBHOOK_URL,
 // CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the GitHub Actions defaults.
-import {discordText, failureText, firePayload, parseRelease, reviewEligible, reviewText} from './lib.mjs'
+import {discordText, failureText, firePayload, parseRelease, readRelease, reviewEligible, reviewText} from './lib.mjs'
 
 const env = process.env
 
@@ -61,12 +61,14 @@ async function startReview (release, buildOk) {
 
 async function notify () {
     const buildOk = env.BUILD_OK === 'true'
+    const json = readRelease(env)
     // the check job failed before it wrote the release (no packages listed, nothing built)
-    if (!buildOk && !env.RELEASE) {
+    if (!buildOk && !json) {
         if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: 'check'}))
+        else console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice that the check failed.')
         return
     }
-    const release = parseRelease(env.RELEASE)
+    const release = parseRelease(json)
     const session = await startReview(release, buildOk)
     if (!env.DISCORD_WEBHOOK_URL) {
         console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')

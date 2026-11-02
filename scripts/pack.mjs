@@ -1,4 +1,4 @@
-// Packs each package of the release (env RELEASE, the JSON from check.mjs) into <out>/<tarball>,
+// Packs each package of the release (the JSON from check.mjs: file RELEASE_FILE or env RELEASE) into <out>/<tarball>,
 // in the listed order.
 //
 // Without --clean-package: `npm pack` (it runs the package's prepack, prepare and postpack scripts).
@@ -13,7 +13,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {parseRelease} from './lib.mjs'
+import {parseRelease, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -27,7 +27,7 @@ if (!args.out) throw new Error('--out is required')
 const root = path.resolve(args.root)
 const out = path.resolve(args.out)
 fs.mkdirSync(out, {recursive: true})
-const release = parseRelease(process.env.RELEASE)
+const release = parseRelease(readRelease())
 const run = (cmd, argv, cwd) => execFileSync(cmd, argv, {cwd, stdio: 'inherit'})
 
 function cleanPackageBin (dir) {

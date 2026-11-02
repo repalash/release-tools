@@ -318,6 +318,17 @@ export function parseRelease (json) {
 }
 
 /**
+ * The release JSON as text: the file RELEASE_FILE when it exists, else env RELEASE. The workflow
+ * passes it between jobs as an artifact, because GitHub drops a job output that contains a masked
+ * value (a changelog that mentions a string the runner masks), and the job output would be empty.
+ * @returns {string} '' when there is neither
+ */
+export function readRelease (env = process.env) {
+    if (env.RELEASE_FILE && fs.existsSync(env.RELEASE_FILE)) return fs.readFileSync(env.RELEASE_FILE, 'utf8')
+    return env.RELEASE || ''
+}
+
+/**
  * The Discord notice for a release step that failed without its own notice: the check script, the
  * notice itself, or the publish after approval. Reads only the GitHub Actions defaults, not RELEASE.
  * @returns {string} at most 2000 characters (the Discord limit)

@@ -8,6 +8,7 @@
 // GitHub outputs:
 //   pending=true|false  there are packages to publish (also set when the changelog check fails)
 //   release=<JSON>      {repository, sha, runUrl, packages: [...], errors: [...]}
+// With env RELEASE_FILE, the same JSON is also written to that file (the workflow uploads it).
 // Exits 1 when a changelog section is missing.
 import {parseArgs} from 'node:util'
 import path from 'node:path'
@@ -72,6 +73,10 @@ for (const p of readPackages(root, input)) {
 
 const pending = release.packages.length > 0
 setOutputs({pending, release: JSON.stringify(release)})
+if (process.env.RELEASE_FILE) {
+    fs.mkdirSync(path.dirname(process.env.RELEASE_FILE), {recursive: true})
+    fs.writeFileSync(process.env.RELEASE_FILE, JSON.stringify(release))
+}
 
 if (process.env.GITHUB_STEP_SUMMARY && pending) {
     const rows = release.packages.map(p => `| ${p.name} | ${p.version} | ${p.distTag || 'latest'} | \`${p.tag}\` | ${p.commits.length} |`)

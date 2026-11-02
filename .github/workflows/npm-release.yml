@@ -6,14 +6,20 @@ name: npm release
 #
 # Jobs:
 #   check    lists the packages to publish (public, version not on npm, build order), checks their
-#            CHANGELOG sections (require-changelog), runs `build`, packs each package, and uploads
-#            the tarballs. Runs the caller's code; has no secrets.
+#            CHANGELOG sections (require-changelog), uploads that list (the release JSON) before the
+#            build, runs `build`, packs each package, and uploads the tarballs. Runs the caller's
+#            code; has no secrets.
 #   notify   starts the Claude review routine and posts the Discord notice, or that the check
 #            failed. Runs only the scripts of this repository; it has the secrets and never runs
 #            the caller's code.
 #   publish  environment npm-publish: publishes the tarballs with provenance (npm trusted
 #            publishing), then creates a tag or a GitHub release per package. Posts to Discord
 #            when it fails.
+#
+# The release JSON goes to the other jobs as the artifact npm-release-plan, not as a job output:
+# GitHub drops a job output that contains a value the runner masks (a changelog can mention such a
+# string), and the release would have no package list. It is uploaded before the build, so the
+# caller's build cannot change it.
 #
 # The jobs check out the scripts of this repository at the commit of this workflow file
 # (job.workflow_repository, job.workflow_sha), so a caller pinned to a tag or commit runs the
@@ -103,7 +109,18 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           TAG_FORMAT: ${{ inputs.tag-format }}
           REQUIRE_CHANGELOG: ${{ inputs.require-changelog }}
+          RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
         run: node "$RUNNER_TEMP/release-tools/scripts/check.mjs"
+      # Also when the changelog check failed, so the notice can list the errors.
+      - name: Upload the release JSON
+        if: ${{ !cancelled() && steps.check.outputs.pending == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-release-plan
+          path: ${{ runner.temp }}/release-plan/release.json
+          if-no-files-found: error
+          retention-days: 14 # as long as the tarballs
+          overwrite: true
       # GitHub creates a missing environment on first use, without protection rules: the publish
       # job would then run without approval. Stop before the build when npm-publish has no
       # required reviewer.
@@ -127,7 +144,7 @@ jobs:
       - name: Pack
         if: steps.check.outputs.pending == 'true'
         env:
-          RELEASE: ${{ steps.check.outputs.release }}
+          RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
           CLEAN_PACKAGE: ${{ inputs.clean-package }}
         run: node "$RUNNER_TEMP/release-tools/scripts/pack.mjs" --out "$RUNNER_TEMP/tarballs"
       - uses: actions/upload-artifact@v7
@@ -159,9 +176,16 @@ jobs:
         with:
           package-manager-cache: false # no dependency cache in release builds
           node-version: 24
+      # Missing when the check job failed before it listed the packages; notify.mjs then posts that.
+      - uses: actions/download-artifact@v8
+        if: needs.check.outputs.pending == 'true'
+        continue-on-error: true # notify.mjs posts the missing release as a failure
+        with:
+          name: npm-release-plan
+          path: ${{ runner.temp }}/release-plan
       - name: Claude review and Discord notice
         env:
-          RELEASE: ${{ needs.check.outputs.release }}
+          RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
           BUILD_OK: ${{ needs.check.result == 'success' }}
           REVIEW_ACTOR: ${{ inputs.review-actor }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -196,9 +220,13 @@ jobs:
         with:
           name: npm-release-tarballs
           path: ${{ runner.temp }}/tarballs
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-plan
+          path: ${{ runner.temp }}/release-plan
       - name: Publish and tag
         env:
-          RELEASE: ${{ needs.check.outputs.release }}
+          RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
           GITHUB_RELEASE: ${{ inputs.github-release }}
           GH_TOKEN: ${{ github.token }}
         run: node .release-tools/scripts/publish.mjs --tarballs "$RUNNER_TEMP/tarballs"
