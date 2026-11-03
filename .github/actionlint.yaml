@@ -4,3 +4,6 @@ paths:
   .github/workflows/npm-release.yml:
     ignore:
       - 'property "workflow_(repository|sha)" is not defined'
+  .github/workflows/deploy.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined'

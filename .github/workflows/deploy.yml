@@ -1,0 +1,178 @@
+name: deploy
+
+# Reusable workflow: deploys after a reviewer approves an environment, with the same notice and Claude review as
+# npm-release.yml. Usage and repository setup: README.md of this repository.
+#
+# Jobs:
+#   check    checks that the environment requires a reviewer, then runs the `check` command (install, tests).
+#            Runs the caller's code; has no secrets.
+#   notify   starts the Claude review routine and posts the Discord notice: the approval link, the review and the
+#            commits since the last successful deployment of the environment; or that the check failed. Runs only
+#            the scripts of this repository; it has the secrets and never runs the caller's code.
+#   deploy   environment `environment` (the approval): runs the `deploy` command with the secrets named in
+#            `secrets-env` (the environment's secrets, or the repository's through `secrets: inherit`). Posts to
+#            Discord when it fails.
+#
+# The jobs check out the scripts of this repository at the commit of this workflow file (job.workflow_repository,
+# job.workflow_sha), so a caller pinned to a tag or commit runs the matching scripts.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The GitHub environment to deploy to. It must have a required reviewer: the approval.'
+        type: string
+        required: true
+      deploy:
+        description: 'Shell command that deploys, run in working-directory after the approval.'
+        type: string
+        required: true
+      check:
+        description: 'Shell command run in working-directory before the approval (install, typecheck, tests), with no secrets. Empty: none.'
+        type: string
+        default: ''
+      working-directory:
+        description: 'Directory of the deployed project; the commit list of the notice covers it.'
+        type: string
+        default: '.'
+      secrets-env:
+        description: 'Names of the secrets the deploy command gets as environment variables, separated by spaces or commas.'
+        type: string
+        default: ''
+      name:
+        description: 'What is deployed, for the notices. Empty: `<repository> (<environment>)`.'
+        type: string
+        default: ''
+      node-version:
+        description: 'Node.js version for the check and the deploy.'
+        type: string
+        default: '24'
+      review-actor:
+        description: 'GitHub user whose pushes start the Claude review routine. Empty: never.'
+        type: string
+        default: 'repalash'
+    secrets:
+      DISCORD_WEBHOOK_URL:
+        description: 'Discord webhook for the notices (optional).'
+        required: false
+      CLAUDE_REVIEW_FIRE_URL:
+        description: 'Fire URL of the Claude Code review routine (optional).'
+        required: false
+      CLAUDE_REVIEW_TOKEN:
+        description: 'Bearer token of the Claude Code review routine (optional).'
+        required: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # GitHub creates a missing environment on first use, without protection rules: the deploy job would then run
+      # without approval. Stop when the environment has no required reviewer.
+      - name: Check that the environment requires a reviewer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          n=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length' 2> /dev/null) || n=0
+          if [ "$n" = 0 ]; then
+            echo "::error::The $ENVIRONMENT environment of $REPOSITORY is missing or has no required reviewer. Set it up first: https://github.com/repalash/release-tools#deploys"
+            exit 1
+          fi
+          echo "$ENVIRONMENT requires a reviewer."
+      - uses: actions/checkout@v7
+        if: inputs.check != ''
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        if: inputs.check != ''
+        with:
+          package-manager-cache: false # no dependency cache in deploy builds
+          node-version: ${{ inputs.node-version }}
+      - name: Check
+        if: inputs.check != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CHECK_COMMAND: ${{ inputs.check }}
+        run: eval "$CHECK_COMMAND"
+
+  notify:
+    needs: check
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read # the last successful deployment, for the commit list
+    steps:
+      # the caller's history only, for the commit list: its code is never run here
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Move the release scripts out of the workspace
+        run: mv .release-tools "$RUNNER_TEMP/release-tools"
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: 24
+      - name: Claude review and Discord notice
+        env:
+          STATE: ${{ needs.check.result == 'success' && 'waiting' || 'check-failed' }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          NAME: ${{ inputs.name }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          REVIEW_ACTOR: ${{ inputs.review-actor }}
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
+          CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/deploy-notify.mjs"
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Move the release scripts out of the workspace
+        run: mv .release-tools "$RUNNER_TEMP/release-tools"
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ inputs.node-version }}
+      - name: Deploy
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.deploy }}
+          SECRETS_ENV: ${{ inputs.secrets-env }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/run-with-secrets.mjs"
+      - name: Discord notice of a failed deploy
+        if: failure()
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          NAME: ${{ inputs.name }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/deploy-notify.mjs" --failed

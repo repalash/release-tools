@@ -8,20 +8,23 @@
 // - The first publish failure stops the run: a package is never published without the listed
 //   packages it depends on. Tag and release failures are collected and fail the run at the end.
 // - Tags and releases use the GitHub API through `gh` (env GH_TOKEN, `contents: write`).
+// - --partial: a package with no tarball (pack.mjs left it out) is skipped, and so is each package that depends on a
+//   skipped one; the others are published.
 //
-// Usage: node publish.mjs --tarballs <dir> [--github-release] [--dry-run]
+// Usage: node publish.mjs --tarballs <dir> [--github-release] [--partial] [--dry-run]
 // --dry-run runs `npm publish --dry-run` and prints the GitHub commands instead of running them.
 import {parseArgs} from 'node:util'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {isPublished, parseRelease, readRelease} from './lib.mjs'
+import {isPublished, parseRelease, partialPlan, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
         'tarballs': {type: 'string'},
         'github-release': {type: 'boolean', default: process.env.GITHUB_RELEASE === 'true'},
+        'partial': {type: 'boolean', default: process.env.PARTIAL === 'true'},
         'dry-run': {type: 'boolean', default: false},
     },
 })
@@ -90,8 +93,15 @@ function markRelease (p, tarball) {
 }
 
 if (!dryRun) checkNpmVersion()
+let packages = release.packages
+if (args.partial) {
+    const built = new Set(packages.filter(p => fs.existsSync(path.resolve(args.tarballs, p.tarball))).map(p => p.name))
+    const plan = partialPlan(packages, built)
+    for (const s of plan.skipped) console.log(`${s.name}: skipped, ${s.reason}`)
+    packages = plan.publish
+}
 const markErrors = []
-for (const p of release.packages) {
+for (const p of packages) {
     const tarball = path.resolve(args.tarballs, p.tarball)
     if (!fs.existsSync(tarball)) throw new Error(`${p.tarball} is not in ${args.tarballs}`)
     if (!dryRun && isPublished(p.name, p.version)) {

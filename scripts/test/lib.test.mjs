@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-    changelogEntry, defaultTagFormat, discordText, distTag, firePayload, formatTag, isMultiPackageInput,
-    failureText, isPrerelease, parsePackagesInput, readPackages, readRelease, reviewEligible, reviewText, sortByDependencies,
-    splitCommit, tagMatchPatterns, tarballName, validateTagFormat,
+    changelogEntry, defaultTagFormat, deployDiscordText, deployReviewText, discordText, distTag, entryFiles, firePayload,
+    formatTag, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
+    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
+    tarballName, validateTagFormat,
 } from '../lib.mjs'
 
 function repo (files) {
@@ -224,4 +225,122 @@ test('failureText cuts a long error and keeps the log link', () => {
     const text = failureText({step: 'notice', error: 'x'.repeat(5000), env})
     assert.ok(text.length <= 2000)
     assert.ok(text.endsWith('…\nLog: https://github.com/o/r/actions/runs/7'))
+})
+
+test('parsePackagesInput: exclusion entries', () => {
+    assert.deepEqual(parsePackagesInput('. plugins/* !plugins/plugin-template-*'), ['.', 'plugins/*', '!plugins/plugin-template-*'])
+    assert.deepEqual(parsePackagesInput('!x'), ['.', '!x']) // only exclusions: the root, minus them
+    assert.throws(() => parsePackagesInput('!a/**'), /not supported/)
+    assert.throws(() => parsePackagesInput('!../x'), /inside the repository/)
+    assert.throws(() => parsePackagesInput('!'), /inside the repository/)
+    assert.equal(isMultiPackageInput('. !x'), false)
+    assert.equal(isMultiPackageInput('. plugins/* !plugins/t-*'), true)
+})
+
+test('readPackages: exclusion entries leave out the directories they match', () => {
+    const root = repo({
+        'package.json': {name: 'core', version: '1.0.0'},
+        'plugins/a/package.json': {name: 'a', version: '1.0.0', peerDependencies: {core: '*'}},
+        'plugins/plugin-template-vite/package.json': {name: 'tpl', version: '1.0.0'},
+        'plugins/plugin-templates/package.json': {name: 'tpls', version: '1.0.0'},
+    })
+    assert.deepEqual(readPackages(root, '. plugins/* !plugins/plugin-template-*').map(p => p.dir), ['.', 'plugins/a', 'plugins/plugin-templates'])
+    assert.deepEqual(readPackages(root, 'plugins/* !plugins/a').map(p => p.dir), ['plugins/plugin-template-vite', 'plugins/plugin-templates'])
+})
+
+test('tagFormatFor: the root package can keep its own format', () => {
+    assert.equal(tagFormatFor('.', '{name}-{version}', 'v{version}'), 'v{version}')
+    assert.equal(tagFormatFor('plugins/a', '{name}-{version}', 'v{version}'), '{name}-{version}')
+    assert.equal(tagFormatFor('.', '{name}-{version}', ''), '{name}-{version}')
+    assert.deepEqual(tagMatchPatterns('v{version}', 'core'), ['v[0-9]*', 'v[0-9]*'])
+})
+
+test('entryFiles and missingEntries', () => {
+    const manifest = {
+        main: 'dist/index.js', module: './dist/index.mjs', types: 'dist/index.d.ts', bin: {cli: './bin/cli.js'},
+        exports: {'.': {types: './lib/index.d.ts', import: './lib/index.js', require: './dist/index.js'}, './dist/': './dist/', './*': './lib/*.js', './package.json': './package.json'},
+    }
+    assert.deepEqual(entryFiles(manifest), ['bin/cli.js', 'dist/index.d.ts', 'dist/index.js', 'dist/index.mjs', 'lib/index.d.ts', 'lib/index.js', 'package.json'])
+    const all = ['package/package.json', 'package/bin/cli.js', 'package/dist/index.js', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/lib/index.js', 'package/lib/index.d.ts']
+    assert.deepEqual(missingEntries(manifest, all), [])
+    assert.deepEqual(missingEntries(manifest, all.filter(f => !f.startsWith('package/dist/'))), ['dist/index.d.ts', 'dist/index.js', 'dist/index.mjs'])
+    assert.deepEqual(missingEntries({main: 'dist'}, ['package/dist/index.js']), []) // Node resolves main to dist/index.js
+    assert.deepEqual(entryFiles({name: 'x'}), [])
+})
+
+test('partialPlan leaves out what has no tarball and what depends on it', () => {
+    const list = [{name: 'core'}, {name: 'ui', internalDeps: ['core']}, {name: 'other'}, {name: 'app', internalDeps: ['ui']}]
+    const {publish, skipped} = partialPlan(list, new Set(['ui', 'other', 'app']))
+    assert.deepEqual(publish.map(p => p.name), ['other'])
+    assert.deepEqual(skipped, [
+        {name: 'core', reason: 'not built'},
+        {name: 'ui', reason: 'depends on core, which is not published'},
+        {name: 'app', reason: 'depends on ui, which is not published'},
+    ])
+    assert.deepEqual(partialPlan(list, new Set(['core', 'ui', 'other', 'app'])).publish.map(p => p.name), ['core', 'ui', 'other', 'app'])
+})
+
+test('discordText and reviewText: a partial release lists what it leaves out', () => {
+    const failed = [{name: 'ui', version: '2.0.0-beta.1', error: 'not built: the tarball has no dist/index.js'}]
+    const text = discordText({ok: true, repository: 'owner/repo', runUrl: 'RUN', packages: [pkgA, pkgB], failed})
+    assert.equal(text, [
+        '📦 owner/repo: **core@1.2.0** is built and waits for approval to publish to npm.',
+        'Approve: RUN',
+        '⚠️ Not built, not published:',
+        '- ui@2.0.0-beta.1: not built: the tarball has no dist/index.js',
+        '',
+        '- `aaa1111` core: add x',
+        '- `bbb2222` core: fix y',
+    ].join('\n'))
+    assert.match(discordText({ok: true, repository: 'r', runUrl: 'RUN', packages: [pkgA, pkgB], failed, buildFailed: true}),
+        /\n⚠️ The build command failed \(see the log\); the packages above built anyway\.\n/)
+    const review = reviewText(release, failed)
+    assert.match(review, /packages \(1, in publish order\):\n- core@1\.2\.0\n/)
+    assert.doesNotMatch(review, /directory: packages\/ui/)
+    assert.match(review, /not built, left out of this release:\n- ui@2\.0\.0-beta\.1: not built/)
+})
+
+const deploy = {repository: 'owner/repo', sha: 'abcdef1234567', runUrl: 'RUN', environment: 'cloud-deploy', name: 'threepipe cloud'}
+
+test('deployReviewText', () => {
+    assert.equal(deployReviewText({...deploy, workingDirectory: 'services/cloud', previous: '1234567', commits: ['aaa1111 cloud: x']}), [
+        'deploy review',
+        'repository: owner/repo',
+        'what: threepipe cloud',
+        'directory: services/cloud',
+        'environment: cloud-deploy',
+        'commit: abcdef1234567',
+        'deployed before: 1234567',
+        'run (approval pending): RUN',
+        'commits since the last deploy:',
+        '  aaa1111 cloud: x',
+        '',
+    ].join('\n'))
+    assert.match(deployReviewText({...deploy, workingDirectory: '.', previous: '', commits: []}), /deployed before: none\n.*\ncommits since the last deploy: none\n$/)
+})
+
+test('deployDiscordText: waiting, check failed, deploy failed', () => {
+    assert.equal(deployDiscordText({...deploy, state: 'waiting', commits: ['aaa1111 cloud: x'], session: 'S'}), [
+        '🚀 owner/repo: **threepipe cloud** `abcdef1` is checked and waits for approval to deploy (cloud-deploy).',
+        'Approve: RUN',
+        '🤖 Claude review: S',
+        '',
+        '- `aaa1111` cloud: x',
+    ].join('\n'))
+    assert.equal(deployDiscordText({...deploy, state: 'check-failed', commits: ['aaa1111 x'], session: 'S'}),
+        '❌ owner/repo: the check of **threepipe cloud** `abcdef1` failed; nothing is deployed.\nLog: RUN')
+    assert.equal(deployDiscordText({...deploy, state: 'deploy-failed'}),
+        '❌ owner/repo: the deploy of **threepipe cloud** `abcdef1` (cloud-deploy) failed after the approval.\nLog: RUN')
+})
+
+test('pickSecrets', () => {
+    assert.deepEqual(pickSecrets({A: '1', B: '2', C: '3'}, 'A, C'), {A: '1', C: '3'})
+    assert.deepEqual(pickSecrets({A: '1'}, ''), {})
+    assert.throws(() => pickSecrets({A: '1', B: ''}, 'A B D'), /missing secret\(s\): B, D/)
+})
+
+test('failureText: what failed', () => {
+    const env = {GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '3'}
+    assert.equal(failureText({step: 'publish', env}), '❌ o/r: the release publish failed\nLog: https://github.com/o/r/actions/runs/3')
+    assert.equal(failureText({what: 'deploy', step: 'notice', error: 'x', env}), '❌ o/r: the deploy notice failed: x\nLog: https://github.com/o/r/actions/runs/3')
 })

@@ -2,8 +2,10 @@
 // npm, in build order (a package after the listed packages it depends on). With
 // --require-changelog, each of them needs a CHANGELOG.md section for its version.
 //
-// Usage: node check.mjs [--root <dir>] [--packages <input>] [--tag-format <format>] [--require-changelog]
-// The options fall back to the env vars PACKAGES, TAG_FORMAT and REQUIRE_CHANGELOG ('true').
+// Usage: node check.mjs [--root <dir>] [--packages <input>] [--tag-format <format>] [--root-tag-format <format>]
+//                       [--require-changelog]
+// The options fall back to the env vars PACKAGES, TAG_FORMAT, ROOT_TAG_FORMAT and REQUIRE_CHANGELOG ('true').
+// --root-tag-format: the tag format of the package at `.` when the others use the tag format (`v{version}`).
 //
 // GitHub outputs:
 //   pending=true|false  there are packages to publish (also set when the changelog check fails)
@@ -15,7 +17,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import {
     commitsSince, defaultTagFormat, distTag, formatTag, isMultiPackageInput, isPrerelease, isPublished,
-    previousTag, readChangelogEntry, readPackages, setOutputs, tagMatchPatterns, tarballName, validateTagFormat,
+    previousTag, readChangelogEntry, readPackages, setOutputs, tagFormatFor, tagMatchPatterns, tarballName, validateTagFormat,
 } from './lib.mjs'
 
 const {values: args} = parseArgs({
@@ -23,6 +25,7 @@ const {values: args} = parseArgs({
         'root': {type: 'string', default: '.'},
         'packages': {type: 'string', default: process.env.PACKAGES || '.'},
         'tag-format': {type: 'string', default: process.env.TAG_FORMAT || ''},
+        'root-tag-format': {type: 'string', default: process.env.ROOT_TAG_FORMAT || ''},
         'require-changelog': {type: 'boolean', default: process.env.REQUIRE_CHANGELOG === 'true'},
     },
 })
@@ -31,6 +34,8 @@ const root = path.resolve(args.root)
 const input = args.packages
 const format = args['tag-format'] || defaultTagFormat(input)
 validateTagFormat(format, isMultiPackageInput(input))
+const rootFormat = args['root-tag-format']
+if (rootFormat) validateTagFormat(rootFormat, false)
 
 const {GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA} = process.env
 const release = {
@@ -41,7 +46,7 @@ const release = {
     errors: [],
 }
 
-console.log(`Packages: ${input}; tag format: ${format}${args['require-changelog'] ? '; CHANGELOG entry required' : ''}`)
+console.log(`Packages: ${input}; tag format: ${format}${rootFormat ? ` (root: ${rootFormat})` : ''}${args['require-changelog'] ? '; CHANGELOG entry required' : ''}`)
 for (const p of readPackages(root, input)) {
     if (p.private) {
         console.log(`  ${p.name} (${p.dir}) is private; skipped`)
@@ -55,20 +60,23 @@ for (const p of readPackages(root, input)) {
     if (args['require-changelog'] && !changelog) {
         release.errors.push(`${p.name}@${p.version}: no section for ${p.version} in ${path.posix.join(p.dir, 'CHANGELOG.md')}`)
     }
-    const prev = previousTag(root, tagMatchPatterns(format, p.name))
+    const own = tagFormatFor(p.dir, format, rootFormat)
+    const prev = previousTag(root, tagMatchPatterns(own, p.name))
     release.packages.push({
         name: p.name,
         version: p.version,
         dir: p.dir,
-        tag: formatTag(format, p),
+        tag: formatTag(own, p),
         distTag: distTag(p.manifest),
         prerelease: isPrerelease(p.version),
         tarball: tarballName(p.name, p.version),
         previousTag: prev,
         commits: commitsSince(root, prev, p.dir),
         changelog: changelog ? changelog.slice(0, 20000) : '',
+        // the packages of this repository it needs (a partial release leaves it out when one of them is not published)
+        internalDeps: p.internalDeps,
     })
-    console.log(`→ ${p.name}@${p.version} is not on npm (tag ${formatTag(format, p)}, previous ${prev || 'none'})`)
+    console.log(`→ ${p.name}@${p.version} is not on npm (tag ${formatTag(own, p)}, previous ${prev || 'none'})`)
 }
 
 const pending = release.packages.length > 0

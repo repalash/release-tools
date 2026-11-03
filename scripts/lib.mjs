@@ -7,23 +7,35 @@ import {execFileSync} from 'node:child_process'
 /**
  * Splits the `packages` input into entries. Entries are separated by whitespace or commas.
  * An entry is a directory (`.`, `types/three`) or a directory followed by `/*` (`packages/*`).
+ * An entry starting with `!` leaves out the directories it matches, where `*` stands for any part of
+ * one path segment (`!packages/template-*`), as in npm workspaces.
  * @param {string} input
  * @returns {string[]}
  */
 export function parsePackagesInput (input) {
     const entries = String(input ?? '').split(/[\s,]+/).filter(Boolean)
-    if (!entries.length) return ['.']
-    for (const e of entries) {
-        if (path.isAbsolute(e) || e.split('/').includes('..')) throw new Error(`packages: '${e}' must be a path inside the repository`)
-        if (/[*?[\]{}]/.test(e.replace(/\/\*$/, ''))) throw new Error(`packages: '${e}' is not supported; use a directory or <directory>/*`)
+    if (!entries.filter(e => !e.startsWith('!')).length) entries.unshift('.')
+    for (const entry of entries) {
+        const exclude = entry.startsWith('!')
+        const e = exclude ? entry.slice(1) : entry
+        if (!e || path.isAbsolute(e) || e.split('/').includes('..')) throw new Error(`packages: '${entry}' must be a path inside the repository`)
+        const unsupported = exclude ? /\*\*|[?[\]{}]/.test(e) : /[*?[\]{}]/.test(e.replace(/\/\*$/, ''))
+        if (unsupported) throw new Error(`packages: '${entry}' is not supported; use a directory, <directory>/*, or !<directory> with * in a segment`)
     }
     return entries
 }
 
 /** True when the `packages` input lists more than one directory or uses a glob. */
 export function isMultiPackageInput (input) {
-    const entries = parsePackagesInput(input)
+    const entries = parsePackagesInput(input).filter(e => !e.startsWith('!'))
     return entries.length > 1 || entries.some(e => e.endsWith('/*'))
+}
+
+/** A test for the directories an exclusion entry (`!dir`, `!dir/prefix-*`) leaves out. */
+function excludeTest (entry) {
+    const pattern = normalizeDir(entry.slice(1)).split('*').map(escapeRE).join('[^/]*')
+    const re = new RegExp(`^${pattern}$`)
+    return dir => re.test(dir)
 }
 
 /**
@@ -50,7 +62,8 @@ function normalizeDir (dir) {
  */
 export function expandPackageDirs (root, entries) {
     const dirs = []
-    for (const entry of entries) {
+    const excluded = entries.filter(e => e.startsWith('!')).map(excludeTest)
+    for (const entry of entries.filter(e => !e.startsWith('!'))) {
         if (entry.endsWith('/*')) {
             const parent = normalizeDir(entry.slice(0, -2))
             const abs = path.join(root, parent)
@@ -66,7 +79,7 @@ export function expandPackageDirs (root, entries) {
             dirs.push(dir)
         }
     }
-    return [...new Set(dirs)]
+    return [...new Set(dirs)].filter(dir => !excluded.some(test => test(dir)))
 }
 
 /**
@@ -159,6 +172,14 @@ export function validateTagFormat (format, multiPackage) {
     if (multiPackage && !format.includes('{name}')) throw new Error(`tag-format '${format}' must contain {name} when packages lists more than one package`)
 }
 
+/**
+ * The tag format of a package: `rootFormat` for the package at the repository root when it is set
+ * (a monorepo whose root package keeps `v{version}` tags), else `format`.
+ */
+export function tagFormatFor (dir, format, rootFormat = '') {
+    return dir === '.' && rootFormat ? rootFormat : format
+}
+
 /** The release tag of a package version: `{name}` and `{version}` replaced. */
 export function formatTag (format, {name, version}) {
     return format.replaceAll('{name}', name).replaceAll('{version}', version)
@@ -189,6 +210,59 @@ export function tarballName (name, version) {
     return `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`
 }
 
+/**
+ * The files a package's manifest points at (main, module, browser, types, typings, bin and the targets in exports),
+ * relative to the package and without `./`. Targets with `*` and directory targets (ending in `/`) are left out.
+ * @param {object} manifest
+ * @returns {string[]}
+ */
+export function entryFiles (manifest) {
+    const out = new Set()
+    const add = v => {
+        if (typeof v === 'string') {
+            if (!v.includes('*') && !v.endsWith('/')) out.add(path.posix.normalize(v).replace(/^\.\//, ''))
+        } else if (v && typeof v === 'object') {
+            for (const x of Object.values(v)) add(x)
+        }
+    }
+    for (const k of ['main', 'module', 'browser', 'types', 'typings']) if (typeof manifest[k] === 'string') add(manifest[k])
+    add(manifest.bin)
+    add(manifest.exports)
+    return [...out].sort()
+}
+
+/**
+ * The entry files (entryFiles) that are not in a tarball, given the tarball's file list (`package/…` paths).
+ * An entry also counts with `.js` or `/index.js` after it, as Node resolves `main`.
+ */
+export function missingEntries (manifest, tarballFiles) {
+    const files = new Set(tarballFiles.map(f => f.replace(/^package\//, '')))
+    return entryFiles(manifest).filter(e => !files.has(e) && !files.has(`${e}.js`) && !files.has(`${e}/index.js`))
+}
+
+/**
+ * The packages of a release that can be published, in order, given which ones have a tarball (`built`): a package
+ * without a tarball is left out, and so is each package that depends on one left out (internalDeps).
+ * @param {{name: string, internalDeps?: string[]}[]} packages in publish order
+ * @param {Set<string>} built the names with a tarball
+ * @returns {{publish: object[], skipped: {name: string, reason: string}[]}}
+ */
+export function partialPlan (packages, built) {
+    const publish = []
+    const skipped = []
+    const out = new Set()
+    for (const p of packages) {
+        const dep = (p.internalDeps ?? []).find(d => out.has(d))
+        if (!built.has(p.name) || dep) {
+            out.add(p.name)
+            skipped.push({name: p.name, reason: dep ? `depends on ${dep}, which is not published` : 'not built'})
+        } else {
+            publish.push(p)
+        }
+    }
+    return {publish, skipped}
+}
+
 /** True when this exact version is on the npm registry (network). */
 export function isPublished (name, version) {
     try {
@@ -213,15 +287,20 @@ export function previousTag (root, patterns) {
     }
 }
 
-/** Up to `limit` non-merge commits that touch `dir` since `prev` (or all), as `git log --oneline` lines (git). */
-export function commitsSince (root, prev, dir, limit = 20) {
+/** Up to `limit` non-merge commits that touch `dir` from `from` (exclusive; '' for the last `limit`) to `to` (git). */
+export function commitsBetween (root, from, to, dir, limit = 20) {
     try {
-        const out = execFileSync('git', ['log', '--oneline', '--no-merges', `-${limit}`, prev ? `${prev}..HEAD` : 'HEAD', '--', dir],
+        const out = execFileSync('git', ['log', '--oneline', '--no-merges', `-${limit}`, from ? `${from}..${to}` : to, '--', dir],
             {cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim()
         return out ? out.split('\n') : []
     } catch {
         return []
     }
+}
+
+/** Up to `limit` non-merge commits that touch `dir` since `prev` (or all), as `git log --oneline` lines (git). */
+export function commitsSince (root, prev, dir, limit = 20) {
+    return commitsBetween(root, prev, 'HEAD', dir, limit)
 }
 
 /** Splits a `git log --oneline` line into its short hash and subject. */
@@ -239,37 +318,88 @@ function label (p) {
  * The text of the review request sent to the Claude Code routine.
  * @param {{repository: string, sha: string, runUrl: string, packages: object[]}} release
  */
-export function reviewText ({repository, sha, runUrl, packages}) {
+export function reviewText ({repository, sha, runUrl, packages}, failed = []) {
+    const gone = new Set(failed.map(f => f.name))
     const lines = [
         'npm release review',
         `repository: ${repository}`,
         `commit: ${sha}`,
         `run (approval pending): ${runUrl}`,
-        `packages (${packages.length}, in publish order):`,
+        `packages (${packages.length - gone.size}, in publish order):`,
     ]
-    for (const p of packages) {
+    for (const p of packages.filter(x => !gone.has(x.name))) {
         lines.push(`- ${label(p)}`, `  directory: ${p.dir}`, `  release tag: ${p.tag}`, `  previous release tag: ${p.previousTag || 'none'}`)
         if (p.commits.length) lines.push('  commits since the previous release:', ...p.commits.map(c => `    ${c}`))
         else lines.push('  commits since the previous release: none')
     }
+    if (failed.length) lines.push('not built, left out of this release:', ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
     return lines.join('\n') + '\n'
 }
 
 /**
- * The Discord notice: the packages wait for approval, or the run failed.
- * @param {{ok: boolean, repository: string, runUrl: string, packages: object[], errors?: string[], session?: string}} n
+ * The text of the review request for a deploy (deploy.yml).
+ * @param {{repository: string, sha: string, runUrl: string, environment: string, name: string, workingDirectory: string, previous: string, commits: string[]}} d
+ */
+export function deployReviewText ({repository, sha, runUrl, environment, name, workingDirectory, previous, commits}) {
+    return [
+        'deploy review',
+        `repository: ${repository}`,
+        `what: ${name}`,
+        `directory: ${workingDirectory}`,
+        `environment: ${environment}`,
+        `commit: ${sha}`,
+        `deployed before: ${previous || 'none'}`,
+        `run (approval pending): ${runUrl}`,
+        ...commits.length ? ['commits since the last deploy:', ...commits.map(c => `  ${c}`)] : ['commits since the last deploy: none'],
+    ].join('\n') + '\n'
+}
+
+/**
+ * The Discord notice of a deploy (deploy.yml). state: `waiting` (checked, waits for approval), `check-failed`
+ * (nothing is deployed) or `deploy-failed` (after the approval).
  * @returns {string} at most 2000 characters (the Discord limit)
  */
-export function discordText ({ok, repository, runUrl, packages, errors = [], session = ''}) {
-    const names = packages.map(p => `**${label(p)}**`).join(', ')
+export function deployDiscordText ({state, repository, runUrl, environment, name, sha, commits = [], session = ''}) {
+    const what = `**${name}** \`${sha.slice(0, 7)}\``
+    const ok = state === 'waiting'
     const lines = ok
-        ? [`📦 ${repository}: ${names} ${packages.length > 1 ? 'are' : 'is'} built and ${packages.length > 1 ? 'wait' : 'waits'} for approval to publish to npm.`, `Approve: ${runUrl}`]
+        ? [`🚀 ${repository}: ${what} is checked and waits for approval to deploy (${environment}).`, `Approve: ${runUrl}`]
+        : state === 'check-failed'
+            ? [`❌ ${repository}: the check of ${what} failed; nothing is deployed.`, `Log: ${runUrl}`]
+            : [`❌ ${repository}: the deploy of ${what} (${environment}) failed after the approval.`, `Log: ${runUrl}`]
+    if (ok && session) lines.push(`🤖 Claude review: ${session}`)
+    if (ok && commits.length) {
+        lines.push('', ...commits.map(c => {
+            const {hash, subject} = splitCommit(c)
+            return `- \`${hash}\` ${subject}`
+        }))
+    }
+    const text = lines.join('\n')
+    return text.length > 2000 ? text.slice(0, 1990) + '\n…' : text
+}
+
+/**
+ * The Discord notice: the packages wait for approval, or the run failed. A partial release lists the packages it
+ * leaves out (`failed`), and says when the build command failed (`buildFailed`) though some packages built.
+ * @param {{ok: boolean, repository: string, runUrl: string, packages: object[], errors?: string[], failed?: object[], buildFailed?: boolean, session?: string}} n
+ * @returns {string} at most 2000 characters (the Discord limit)
+ */
+export function discordText ({ok, repository, runUrl, packages, errors = [], failed = [], buildFailed = false, session = ''}) {
+    // failed: the packages a partial release leaves out ({name, version, error}); the others are built
+    const gone = new Set(failed.map(f => f.name))
+    const built = packages.filter(p => !gone.has(p.name))
+    const names = (ok ? built : packages).map(p => `**${label(p)}**`).join(', ')
+    const lines = ok
+        ? [`📦 ${repository}: ${names} ${built.length > 1 ? 'are' : 'is'} built and ${built.length > 1 ? 'wait' : 'waits'} for approval to publish to npm.`, `Approve: ${runUrl}`]
         : [`❌ ${repository}: the check, build or pack of ${names || 'the release'} failed; nothing is published.`, `Log: ${runUrl}`]
+    if (failed.length) lines.push(`${ok ? '⚠️ Not built, not published' : 'Not built'}:`, ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
+    if (ok && buildFailed) lines.push('⚠️ The build command failed (see the log); the packages above built anyway.')
     if (!ok && errors.length) lines.push(...errors.map(e => `- ${e}`))
     if (ok && session) lines.push(`🤖 Claude review: ${session}`)
-    for (const p of packages) {
+    const listed = ok ? built : packages
+    for (const p of listed) {
         if (!p.commits?.length) continue
-        if (packages.length > 1) lines.push('', `${p.name}:`)
+        if (listed.length > 1) lines.push('', `${p.name}:`)
         else lines.push('')
         lines.push(...p.commits.map(c => {
             const {hash, subject} = splitCommit(c)
@@ -329,9 +459,81 @@ export function readRelease (env = process.env) {
  * notice itself, or the publish after approval. Reads only the GitHub Actions defaults, not RELEASE.
  * @returns {string} at most 2000 characters (the Discord limit)
  */
-export function failureText ({step, error = '', env = process.env}) {
+export function failureText ({step, error = '', what = 'release', env = process.env}) {
     const {GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID} = env
     // the error is cut, not the log link
     const detail = error.length > 1500 ? `: ${error.slice(0, 1500)}…` : error ? `: ${error}` : ''
-    return `❌ ${GITHUB_REPOSITORY}: the release ${step} failed${detail}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
+    return `❌ ${GITHUB_REPOSITORY}: the ${what} ${step} failed${detail}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
 }
+
+/**
+ * The secrets named in `names` (spaces or commas) from the `secrets` context as JSON, for a command's environment.
+ * Throws when one is missing or empty, so a deploy never runs half configured.
+ * @param {Record<string, string>} secrets
+ * @param {string} names
+ * @returns {Record<string, string>}
+ */
+export function pickSecrets (secrets, names) {
+    const list = String(names ?? '').split(/[\s,]+/).filter(Boolean)
+    const missing = list.filter(n => !secrets[n])
+    if (missing.length) throw new Error(`missing secret(s): ${missing.join(', ')} (set them on the environment or the repository)`)
+    return Object.fromEntries(list.map(n => [n, secrets[n]]))
+}
+
+/** Posts a message to a Discord webhook, with no mentions (network). Throws when Discord refuses it. */
+export async function postDiscord (url, content) {
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({content, allowed_mentions: {parse: []}}),
+    })
+    if (!res.ok) throw new Error(`Discord webhook: HTTP ${res.status}`)
+}
+
+/**
+ * Starts a Claude Code routine session with `text` (network). Returns its URL, or '' when the request failed (logged:
+ * a review is optional and never fails a release or a deploy).
+ */
+export async function fireReview ({url, token, text}) {
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'authorization': `Bearer ${token}`,
+                'anthropic-beta': 'experimental-cc-routine-2026-04-01',
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify(firePayload(text)),
+        })
+        const body = await res.json().catch(() => ({}))
+        if (res.ok && body.claude_code_session_url) {
+            console.log(`Claude review session: ${body.claude_code_session_url}`)
+            return body.claude_code_session_url
+        }
+        console.log(`Claude review request failed: HTTP ${res.status} ${JSON.stringify(body.error ?? body).slice(0, 300)}`)
+    } catch (e) {
+        console.log(`Claude review request failed: ${e.message}`)
+    }
+    return ''
+}
+
+/**
+ * The commit of the last successful deployment to a GitHub environment, or '' (network, `gh`; the job needs
+ * `deployments: read`). GitHub records a deployment for each job that runs in an environment.
+ */
+export function lastDeployedSha (repository, environment) {
+    try {
+        const list = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/deployments?environment=${encodeURIComponent(environment)}&per_page=30`],
+            {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}))
+        for (const d of list) {
+            const states = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/deployments/${d.id}/statuses?per_page=10`],
+                {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}))
+            if (states.some(s => s.state === 'success')) return d.sha
+        }
+    } catch (e) {
+        console.log(`The last deployment could not be read: ${e.message.split('\n')[0]}`)
+    }
+    return ''
+}
+

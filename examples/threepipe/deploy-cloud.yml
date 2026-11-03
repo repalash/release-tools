@@ -1,0 +1,33 @@
+# .github/workflows/deploy-cloud.yml of threepipe: deploys services/cloud (a Cloudflare Worker) when the `cloud` branch
+# moves (git push origin dev:cloud), after approval of the cloud-deploy environment. The check runs the typecheck and
+# the e2e suite with no secrets; the deploy gets the environment's two secrets.
+name: Deploy threepipe cloud
+
+on:
+  push:
+    branches: [cloud]
+    paths: ['services/cloud/**', '.github/workflows/deploy-cloud.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloud
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      deployments: read
+    uses: repalash/release-tools/.github/workflows/deploy.yml@v1
+    with:
+      environment: cloud-deploy
+      name: threepipe cloud
+      working-directory: services/cloud
+      check: npm ci && npm run typecheck && npm test
+      deploy: npm ci && npm run deploy:ci
+      secrets-env: CLOUDFLARE_API_TOKEN ADMIN_SERVICE_TOKEN
+      node-version: '22'
+    secrets: inherit

@@ -8,7 +8,8 @@ name: npm release
 #   check    lists the packages to publish (public, version not on npm, build order), checks their
 #            CHANGELOG sections (require-changelog), uploads that list (the release JSON) before the
 #            build, runs `build`, packs each package, and uploads the tarballs. Runs the caller's
-#            code; has no secrets.
+#            code; has no secrets. With `partial`, a failed build goes on: pack leaves out the packages
+#            that were not built (and those that depend on them) and uploads their list.
 #   notify   starts the Claude review routine and posts the Discord notice, or that the check
 #            failed. Runs only the scripts of this repository; it has the secrets and never runs
 #            the caller's code.
@@ -36,6 +37,10 @@ on:
         description: 'Shell command run at the repository root before packing (install, build, test). Empty: no build step.'
         type: string
         default: 'npm ci'
+      post-build:
+        description: 'Shell command run after `build` that must succeed, also with `partial` (a type check of the result, docs). Empty: none.'
+        type: string
+        default: ''
       node-version:
         description: 'Node.js version for the build.'
         type: string
@@ -52,6 +57,14 @@ on:
         description: 'Release tag; {name} and {version} are replaced. Empty: `publish@{version}`, or `{name}-{version}` when packages has a glob or several entries.'
         type: string
         default: ''
+      root-tag-format:
+        description: 'Release tag of the package at `.` when packages also lists others (`v{version}`). Empty: tag-format.'
+        type: string
+        default: ''
+      partial:
+        description: 'Publish what built: the build may fail, and the packages whose tarball lacks their entry files (main, module, types, exports, bin) are left out, with the packages that depend on them. The notice lists them.'
+        type: boolean
+        default: false
       github-release:
         description: 'Create a GitHub release with the tarball for each package (else a plain tag).'
         type: boolean
@@ -83,6 +96,7 @@ jobs:
     outputs:
       pending: ${{ steps.check.outputs.pending }}
       release: ${{ steps.check.outputs.release }}
+      build: ${{ steps.build.outcome }} # `failure` with partial: the job went on
     steps:
       - uses: actions/checkout@v7
         with:
@@ -108,6 +122,7 @@ jobs:
         env:
           PACKAGES: ${{ inputs.packages }}
           TAG_FORMAT: ${{ inputs.tag-format }}
+          ROOT_TAG_FORMAT: ${{ inputs.root-tag-format }}
           REQUIRE_CHANGELOG: ${{ inputs.require-changelog }}
           RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
         run: node "$RUNNER_TEMP/release-tools/scripts/check.mjs"
@@ -137,16 +152,34 @@ jobs:
           fi
           echo "npm-publish requires a reviewer."
       - name: Build
+        id: build
         if: steps.check.outputs.pending == 'true' && inputs.build != ''
+        continue-on-error: ${{ inputs.partial }} # pack then leaves out what was not built
         env:
           BUILD_COMMAND: ${{ inputs.build }}
         run: eval "$BUILD_COMMAND"
+      - name: Post-build
+        if: steps.check.outputs.pending == 'true' && inputs.post-build != ''
+        env:
+          POST_BUILD_COMMAND: ${{ inputs.post-build }}
+        run: eval "$POST_BUILD_COMMAND"
       - name: Pack
         if: steps.check.outputs.pending == 'true'
         env:
           RELEASE: ${{ steps.check.outputs.release }} # a step output: the build cannot change it
           CLEAN_PACKAGE: ${{ inputs.clean-package }}
+          PARTIAL: ${{ inputs.partial }}
+          FAILED_FILE: ${{ runner.temp }}/release-failed/failed.json
         run: node "$RUNNER_TEMP/release-tools/scripts/pack.mjs" --out "$RUNNER_TEMP/tarballs"
+      # partial: the packages pack left out, for the notice (publish skips them by their missing tarball)
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && inputs.partial && steps.check.outputs.pending == 'true' }}
+        with:
+          name: npm-release-failed
+          path: ${{ runner.temp }}/release-failed/failed.json
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
       - uses: actions/upload-artifact@v7
         if: steps.check.outputs.pending == 'true'
         with:
@@ -183,10 +216,18 @@ jobs:
         with:
           name: npm-release-plan
           path: ${{ runner.temp }}/release-plan
+      - uses: actions/download-artifact@v8
+        if: needs.check.outputs.pending == 'true' && inputs.partial
+        continue-on-error: true # nothing was left out
+        with:
+          name: npm-release-failed
+          path: ${{ runner.temp }}/release-failed
       - name: Claude review and Discord notice
         env:
           RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
+          FAILED_FILE: ${{ runner.temp }}/release-failed/failed.json
           BUILD_OK: ${{ needs.check.result == 'success' }}
+          BUILD_STEP: ${{ needs.check.outputs.build }}
           REVIEW_ACTOR: ${{ inputs.review-actor }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
@@ -228,6 +269,7 @@ jobs:
         env:
           RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
           GITHUB_RELEASE: ${{ inputs.github-release }}
+          PARTIAL: ${{ inputs.partial }}
           GH_TOKEN: ${{ github.token }}
         run: node .release-tools/scripts/publish.mjs --tarballs "$RUNNER_TEMP/tarballs"
       - name: Discord notice of a failed publish
