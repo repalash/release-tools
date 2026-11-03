@@ -9,9 +9,10 @@ name: deploy
 #   notify   starts the Claude review routine and posts the Discord notice: the approval link, the review and the
 #            commits since the last successful deployment of the environment; or that the check failed. Runs only
 #            the scripts of this repository; it has the secrets and never runs the caller's code.
-#   deploy   environment `environment` (the approval): runs the `deploy` command with the secrets named in
-#            `secrets-env` (the environment's secrets, or the repository's through `secrets: inherit`). Posts to
-#            Discord when it fails.
+#   deploy   environment `environment` (the approval): a step of this repository puts the secrets named in
+#            `secrets-env` (the environment's, or the repository's through `secrets: inherit`) in the job's
+#            environment, then the `deploy` command runs with only those.
+#   failed   when the deploy failed: the Discord notice, from a job of its own (the deploy job ran caller code).
 #
 # The jobs check out the scripts of this repository at the commit of this workflow file (job.workflow_repository,
 # job.workflow_sha), so a caller pinned to a tag or commit runs the matching scripts.
@@ -76,7 +77,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          n=$(gh api "repos/$REPOSITORY/environments/$ENVIRONMENT" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length' 2> /dev/null) || n=0
+          env_path=$(jq -rn --arg e "$ENVIRONMENT" '$e | @uri')
+          n=$(gh api "repos/$REPOSITORY/environments/$env_path" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length' 2> /dev/null) || n=0
           if [ "$n" = 0 ]; then
             echo "::error::The $ENVIRONMENT environment of $REPOSITORY is missing or has no required reviewer. Set it up first: https://github.com/repalash/release-tools#deploys"
             exit 1
@@ -162,17 +164,39 @@ jobs:
         with:
           package-manager-cache: false
           node-version: ${{ inputs.node-version }}
+      # its own step, before any caller code: the deploy command gets the listed secrets only
+      - name: Secrets for the deploy
+        env:
+          SECRETS_ENV: ${{ inputs.secrets-env }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: node "$RUNNER_TEMP/release-tools/scripts/export-secrets.mjs"
       - name: Deploy
         working-directory: ${{ inputs.working-directory }}
         env:
-          COMMAND: ${{ inputs.deploy }}
-          SECRETS_ENV: ${{ inputs.secrets-env }}
-          SECRETS_JSON: ${{ toJSON(secrets) }}
-        run: node "$RUNNER_TEMP/release-tools/scripts/run-with-secrets.mjs"
+          DEPLOY_COMMAND: ${{ inputs.deploy }}
+        run: eval "$DEPLOY_COMMAND"
+
+  failed:
+    needs: deploy
+    if: ${{ failure() && needs.deploy.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: 24
       - name: Discord notice of a failed deploy
-        if: failure()
         env:
           ENVIRONMENT: ${{ inputs.environment }}
           NAME: ${{ inputs.name }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: node "$RUNNER_TEMP/release-tools/scripts/deploy-notify.mjs" --failed
+        run: node scripts/deploy-notify.mjs --failed

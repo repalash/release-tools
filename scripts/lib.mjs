@@ -380,11 +380,11 @@ export function deployDiscordText ({state, repository, runUrl, environment, name
 
 /**
  * The Discord notice: the packages wait for approval, or the run failed. A partial release lists the packages it
- * leaves out (`failed`), and says when the build command failed (`buildFailed`) though some packages built.
- * @param {{ok: boolean, repository: string, runUrl: string, packages: object[], errors?: string[], failed?: object[], buildFailed?: boolean, session?: string}} n
+ * leaves out (`failed`: {name, version, error}).
+ * @param {{ok: boolean, repository: string, runUrl: string, packages: object[], errors?: string[], failed?: object[], session?: string}} n
  * @returns {string} at most 2000 characters (the Discord limit)
  */
-export function discordText ({ok, repository, runUrl, packages, errors = [], failed = [], buildFailed = false, session = ''}) {
+export function discordText ({ok, repository, runUrl, packages, errors = [], failed = [], session = ''}) {
     // failed: the packages a partial release leaves out ({name, version, error}); the others are built
     const gone = new Set(failed.map(f => f.name))
     const built = packages.filter(p => !gone.has(p.name))
@@ -393,7 +393,6 @@ export function discordText ({ok, repository, runUrl, packages, errors = [], fai
         ? [`📦 ${repository}: ${names} ${built.length > 1 ? 'are' : 'is'} built and ${built.length > 1 ? 'wait' : 'waits'} for approval to publish to npm.`, `Approve: ${runUrl}`]
         : [`❌ ${repository}: the check, build or pack of ${names || 'the release'} failed; nothing is published.`, `Log: ${runUrl}`]
     if (failed.length) lines.push(`${ok ? '⚠️ Not built, not published' : 'Not built'}:`, ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
-    if (ok && buildFailed) lines.push('⚠️ The build command failed (see the log); the packages above built anyway.')
     if (!ok && errors.length) lines.push(...errors.map(e => `- ${e}`))
     if (ok && session) lines.push(`🤖 Claude review: ${session}`)
     const listed = ok ? built : packages
@@ -520,20 +519,31 @@ export async function fireReview ({url, token, text}) {
 
 /**
  * The commit of the last successful deployment to a GitHub environment, or '' (network, `gh`; the job needs
- * `deployments: read`). GitHub records a deployment for each job that runs in an environment.
+ * `deployments: read`). GitHub records a deployment for each job that runs in an environment; one that succeeded is
+ * ACTIVE (the latest) or INACTIVE (replaced by a later one).
  */
 export function lastDeployedSha (repository, environment) {
+    const [owner, name] = repository.split('/')
+    const query = `query($owner: String!, $name: String!, $env: String!) { repository(owner: $owner, name: $name) {
+        deployments(environments: [$env], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { commitOid state } } } }`
     try {
-        const list = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/deployments?environment=${encodeURIComponent(environment)}&per_page=30`],
-            {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}))
-        for (const d of list) {
-            const states = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/deployments/${d.id}/statuses?per_page=10`],
-                {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}))
-            if (states.some(s => s.state === 'success')) return d.sha
-        }
+        const out = execFileSync('gh', ['api', 'graphql', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `env=${environment}`,
+            '--jq', '[.data.repository.deployments.nodes[] | select(.state == "ACTIVE" or .state == "INACTIVE")][0].commitOid // ""'],
+        {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']})
+        return out.trim()
     } catch (e) {
-        console.log(`The last deployment could not be read: ${e.message.split('\n')[0]}`)
+        console.log(`The last deployment could not be read: ${String(e.stderr || e.message).split('\n')[0]}`)
+        return ''
     }
-    return ''
+}
+
+/** True when `sha` is a commit in the clone at `root` (git). */
+export function hasCommit (root, sha) {
+    try {
+        execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], {cwd: root, stdio: 'ignore'})
+        return true
+    } catch {
+        return false
+    }
 }
 

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, deployDiscordText, deployReviewText, discordText, distTag, entryFiles, firePayload,
-    formatTag, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
+    formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
     readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
     tarballName, validateTagFormat,
 } from '../lib.mjs'
@@ -292,8 +292,6 @@ test('discordText and reviewText: a partial release lists what it leaves out', (
         '- `aaa1111` core: add x',
         '- `bbb2222` core: fix y',
     ].join('\n'))
-    assert.match(discordText({ok: true, repository: 'r', runUrl: 'RUN', packages: [pkgA, pkgB], failed, buildFailed: true}),
-        /\n⚠️ The build command failed \(see the log\); the packages above built anyway\.\n/)
     const review = reviewText(release, failed)
     assert.match(review, /packages \(1, in publish order\):\n- core@1\.2\.0\n/)
     assert.doesNotMatch(review, /directory: packages\/ui/)
@@ -343,4 +341,9 @@ test('failureText: what failed', () => {
     const env = {GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r', GITHUB_RUN_ID: '3'}
     assert.equal(failureText({step: 'publish', env}), '❌ o/r: the release publish failed\nLog: https://github.com/o/r/actions/runs/3')
     assert.equal(failureText({what: 'deploy', step: 'notice', error: 'x', env}), '❌ o/r: the deploy notice failed: x\nLog: https://github.com/o/r/actions/runs/3')
+})
+
+test('hasCommit', () => {
+    assert.equal(hasCommit('.', 'HEAD'), true)
+    assert.equal(hasCommit('.', '0123456789abcdef0123456789abcdef01234567'), false)
 })

@@ -6,7 +6,8 @@ import path from 'node:path'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
 
-const script = path.join(import.meta.dirname, '..', 'pack.mjs')
+const pack = path.join(import.meta.dirname, '..', 'pack.mjs')
+const build = path.join(import.meta.dirname, '..', 'build-packages.mjs')
 const run = promisify(execFile)
 
 function repo (files) {
@@ -17,37 +18,74 @@ function repo (files) {
     }
     return root
 }
-
+const env = extra => ({PATH: process.env.PATH, HOME: os.homedir(), ...extra})
 const pkg = (name, extra = {}) => ({name, version: '1.0.0', dir: `packages/${name}`, tarball: `${name}-1.0.0.tgz`, internalDeps: [], ...extra})
+const manifest = (name, extra = {}) => ({name, version: '1.0.0', main: 'dist/index.js', files: ['dist'], ...extra})
 
-test('--partial packs what built and leaves out the rest, with what depends on it', async () => {
+test('pack --partial: leaves out a failed build, a tarball without its entry files, and what depends on them', async () => {
     const root = repo({
-        'packages/a/package.json': {name: 'a', version: '1.0.0', main: 'dist/index.js', files: ['dist']},
-        'packages/a/dist/index.js': 'export {}',
-        'packages/b/package.json': {name: 'b', version: '1.0.0', main: 'dist/index.js', files: ['dist']},
-        'packages/c/package.json': {name: 'c', version: '1.0.0', main: 'index.js', dependencies: {b: '*'}},
-        'packages/c/index.js': 'export {}',
+        'packages/a/package.json': manifest('a'), 'packages/a/dist/index.js': 'export {}',
+        'packages/b/package.json': manifest('b'), 'packages/b/dist/index.js': 'export {}', // built, but its package-build failed
+        'packages/c/package.json': manifest('c', {dependencies: {b: '*'}}), 'packages/c/dist/index.js': 'export {}',
+        'packages/d/package.json': manifest('d'), // no dist: the tarball lacks dist/index.js
+        'packages/e/package.json': manifest('e', {dependencies: {d: '*'}}), 'packages/e/dist/index.js': 'export {}',
+        'build.json': [{name: 'b', version: '1.0.0', error: 'package-build exited with 1'}],
     })
     try {
-        const release = {packages: [pkg('a'), pkg('b'), pkg('c', {internalDeps: ['b']})]}
+        const release = {packages: [pkg('a'), pkg('b'), pkg('c', {internalDeps: ['b']}), pkg('d'), pkg('e', {internalDeps: ['d']})]}
         const out = path.join(root, 'out'), failedFile = path.join(root, 'failed', 'failed.json')
-        await run(process.execPath, [script, '--root', root, '--out', out, '--partial', '--failed-file', failedFile],
-            {env: {PATH: process.env.PATH, HOME: os.homedir(), RELEASE: JSON.stringify(release)}})
-        assert.deepEqual(fs.readdirSync(out), ['a-1.0.0.tgz'])
+        await run(process.execPath, [pack, '--root', root, '--out', out, '--partial', '--failed-file', failedFile, '--build-failed-file', path.join(root, 'build.json')],
+            {env: env({RELEASE: JSON.stringify(release)})})
+        assert.deepEqual(fs.readdirSync(out), ['a-1.0.0.tgz']) // e was packed, then removed with d
         assert.deepEqual(JSON.parse(fs.readFileSync(failedFile, 'utf8')), [
-            {name: 'b', version: '1.0.0', error: 'not built: the tarball has no dist/index.js'},
-            {name: 'c', version: '1.0.0', error: 'depends on b, which is not built'},
+            {name: 'b', version: '1.0.0', error: 'package-build exited with 1'},
+            {name: 'c', version: '1.0.0', error: 'depends on b, which is not published'},
+            {name: 'd', version: '1.0.0', error: 'not built: the tarball has no dist/index.js'},
+            {name: 'e', version: '1.0.0', error: 'depends on d, which is not published'},
         ])
     } finally {
         fs.rmSync(root, {recursive: true, force: true})
     }
 })
 
-test('--partial fails when nothing was built', async () => {
-    const root = repo({'packages/b/package.json': {name: 'b', version: '1.0.0', main: 'dist/index.js'}})
+test('pack --partial: another error stops the run (here: no clean-package), as without --partial', async () => {
+    const root = repo({'packages/a/package.json': manifest('a'), 'packages/a/dist/index.js': 'export {}'})
     try {
-        const env = {PATH: process.env.PATH, HOME: os.homedir(), RELEASE: JSON.stringify({packages: [pkg('b')]})}
-        await assert.rejects(run(process.execPath, [script, '--root', root, '--out', path.join(root, 'out'), '--partial', '--failed-file', path.join(root, 'f.json')], {env}), {code: 1})
+        await assert.rejects(run(process.execPath, [pack, '--root', root, '--out', path.join(root, 'out'), '--clean-package', '--partial', '--failed-file', path.join(root, 'f.json')],
+            {env: env({RELEASE: JSON.stringify({packages: [pkg('a')]})})}), e => /clean-package is not installed/.test(e.stderr))
+    } finally {
+        fs.rmSync(root, {recursive: true, force: true})
+    }
+})
+
+test('pack --partial fails when nothing is left', async () => {
+    const root = repo({'packages/b/package.json': manifest('b')})
+    try {
+        await assert.rejects(run(process.execPath, [pack, '--root', root, '--out', path.join(root, 'out'), '--partial', '--failed-file', path.join(root, 'f.json')],
+            {env: env({RELEASE: JSON.stringify({packages: [pkg('b')]})})}), {code: 1})
+    } finally {
+        fs.rmSync(root, {recursive: true, force: true})
+    }
+})
+
+test('build-packages: each package in build order; --partial goes on and skips what depends on a failure', async () => {
+    const root = repo({
+        'packages/a/package.json': {name: 'a', version: '1.0.0', dependencies: {b: '*'}},
+        'packages/b/package.json': {name: 'b', version: '1.0.0'},
+        'packages/c/package.json': {name: 'c', version: '1.0.0'},
+        'packages/b/FAIL': '',
+    })
+    try {
+        const failedFile = path.join(root, 'build.json')
+        const cmd = 'echo "$(basename "$PWD")" >> ../../order; test ! -e FAIL'
+        await run(process.execPath, [build, '--root', root, '--packages', 'packages/*', '--partial', '--failed-file', failedFile], {env: env({PACKAGE_BUILD: cmd})})
+        assert.equal(fs.readFileSync(path.join(root, 'order'), 'utf8'), 'b\nc\n') // a after b, and skipped
+        assert.deepEqual(JSON.parse(fs.readFileSync(failedFile, 'utf8')), [
+            {name: 'b', version: '1.0.0', error: 'package-build exited with 1'},
+            {name: 'a', version: '1.0.0', error: 'depends on b, which did not build'},
+        ])
+        // without --partial the first failure stops it
+        await assert.rejects(run(process.execPath, [build, '--root', root, '--packages', 'packages/*'], {env: env({PACKAGE_BUILD: cmd})}), {code: 1})
     } finally {
         fs.rmSync(root, {recursive: true, force: true})
     }

@@ -2,11 +2,13 @@ import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import path from 'node:path'
+import fs from 'node:fs'
+import os from 'node:os'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
 
 const notify = path.join(import.meta.dirname, '..', 'deploy-notify.mjs')
-const runner = path.join(import.meta.dirname, '..', 'run-with-secrets.mjs')
+const exporter = path.join(import.meta.dirname, '..', 'export-secrets.mjs')
 const run = promisify(execFile)
 
 /** A local server that records requests; /fire answers with a session URL. */
@@ -62,16 +64,28 @@ test('deploy notice: a failed check gets no review; --failed posts the failed de
     }
 })
 
-test('run-with-secrets: the command gets the listed secrets only, not the JSON', async () => {
-    const {stdout} = await run(process.execPath, [runner], {env: {
-        PATH: process.env.PATH, SECRETS_JSON: JSON.stringify({A: 'one', B: 'two', C: 'three'}), SECRETS_ENV: 'A B',
-        COMMAND: 'echo "$A $B ${C:-none} ${SECRETS_JSON:-gone}"',
-    }})
-    assert.equal(stdout, 'one two none gone\n')
+test('export-secrets writes only the listed secrets to GITHUB_ENV, in the multiline form', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'export-secrets-'))
+    try {
+        const file = path.join(dir, 'env')
+        await run(process.execPath, [exporter], {env: {PATH: process.env.PATH, GITHUB_ENV: file,
+            SECRETS_JSON: JSON.stringify({A: 'one', B: 'two\nlines', C: 'three'}), SECRETS_ENV: 'A B'}})
+        const text = fs.readFileSync(file, 'utf8')
+        assert.match(text, /^A<<(EOF_[0-9a-f]{16})\none\n\1\nB<<(EOF_[0-9a-f]{16})\ntwo\nlines\n\2\n$/)
+        assert.doesNotMatch(text, /three/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
 })
 
-test('run-with-secrets: a missing secret stops it before the command; the exit code is the command\'s', async () => {
-    await assert.rejects(run(process.execPath, [runner], {env: {PATH: process.env.PATH, SECRETS_JSON: '{}', SECRETS_ENV: 'A', COMMAND: 'echo ran'}}),
-        e => /missing secret\(s\): A/.test(e.stderr) && !e.stdout.includes('ran'))
-    await assert.rejects(run(process.execPath, [runner], {env: {PATH: process.env.PATH, SECRETS_JSON: '{}', COMMAND: 'exit 3'}}), {code: 3})
+test('export-secrets: a missing secret fails, and nothing is written', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'export-secrets-'))
+    try {
+        const file = path.join(dir, 'env')
+        await assert.rejects(run(process.execPath, [exporter], {env: {PATH: process.env.PATH, GITHUB_ENV: file, SECRETS_JSON: '{"A":"1"}', SECRETS_ENV: 'A B'}}),
+            e => /missing secret\(s\): B/.test(e.stderr))
+        assert.equal(fs.existsSync(file), false)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
 })

@@ -8,19 +8,30 @@
 // `--failed <step>`: only posts that the release <step> failed, for the jobs that have no notice of
 // their own (the workflow runs it when such a job fails).
 //
-// Env: RELEASE_FILE or RELEASE (JSON from check.mjs), FAILED_FILE (a partial release: the packages pack.mjs left
-// out), BUILD_OK ('true'), BUILD_STEP (`failure`: the build command failed and a partial release went on), REVIEW_ACTOR, DISCORD_WEBHOOK_URL, CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the
-// GitHub Actions defaults.
+// A partial release (PARTIAL): the packages it leaves out are decided as publish.mjs decides them, from the tarballs
+// in TARBALLS_DIR (partialPlan), so the approver sees what will be published; FAILED_FILE (from pack.mjs) only gives
+// the reason of each.
+//
+// Env: RELEASE_FILE or RELEASE (JSON from check.mjs), PARTIAL, TARBALLS_DIR, FAILED_FILE, BUILD_OK ('true'),
+// REVIEW_ACTOR, DISCORD_WEBHOOK_URL, CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the GitHub Actions defaults.
 import fs from 'node:fs'
+import path from 'node:path'
 import {parseArgs} from 'node:util'
-import {discordText, failureText, fireReview, parseRelease, postDiscord, readRelease, reviewEligible, reviewText} from './lib.mjs'
+import {discordText, failureText, fireReview, parseRelease, partialPlan, postDiscord, readRelease, reviewEligible, reviewText} from './lib.mjs'
 
 const env = process.env
 const discord = content => postDiscord(env.DISCORD_WEBHOOK_URL, content)
 
-/** The packages a partial release left out (pack.mjs), or none. */
-function readFailed () {
-    return env.FAILED_FILE && fs.existsSync(env.FAILED_FILE) ? JSON.parse(fs.readFileSync(env.FAILED_FILE, 'utf8')) : []
+/** The packages a partial release leaves out: those publish.mjs will skip, with pack.mjs's reason when it gave one. */
+function leftOut (release) {
+    if (env.PARTIAL !== 'true') return []
+    const dir = env.TARBALLS_DIR || ''
+    const built = new Set(release.packages.filter(p => dir && fs.existsSync(path.join(dir, p.tarball))).map(p => p.name))
+    const reasons = new Map((env.FAILED_FILE && fs.existsSync(env.FAILED_FILE) ? JSON.parse(fs.readFileSync(env.FAILED_FILE, 'utf8')) : [])
+        .map(f => [f.name, String(f.error)]))
+    return partialPlan(release.packages, built).skipped.map(({name, reason}) => ({
+        name, version: release.packages.find(p => p.name === name).version, error: reasons.get(name) ?? reason,
+    }))
 }
 
 async function startReview (release, buildOk, failed) {
@@ -49,13 +60,13 @@ async function notify () {
         return
     }
     const release = parseRelease(json)
-    const failed = readFailed()
+    const failed = buildOk ? leftOut(release) : []
     const session = await startReview(release, buildOk, failed)
     if (!env.DISCORD_WEBHOOK_URL) {
         console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')
         return
     }
-    await discord(discordText({ok: buildOk, repository: release.repository, runUrl: release.runUrl, packages: release.packages, errors: release.errors, failed, buildFailed: env.BUILD_STEP === 'failure', session}))
+    await discord(discordText({ok: buildOk, repository: release.repository, runUrl: release.runUrl, packages: release.packages, errors: release.errors, failed, session}))
     console.log('Discord notice sent.')
 }
 

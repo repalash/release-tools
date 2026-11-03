@@ -8,8 +8,8 @@ name: npm release
 #   check    lists the packages to publish (public, version not on npm, build order), checks their
 #            CHANGELOG sections (require-changelog), uploads that list (the release JSON) before the
 #            build, runs `build`, packs each package, and uploads the tarballs. Runs the caller's
-#            code; has no secrets. With `partial`, a failed build goes on: pack leaves out the packages
-#            that were not built (and those that depend on them) and uploads their list.
+#            code; has no secrets. With `partial`, `package-build` builds each package and a failure goes
+#            on: pack leaves out the packages that did not build (and those that depend on them).
 #   notify   starts the Claude review routine and posts the Discord notice, or that the check
 #            failed. Runs only the scripts of this repository; it has the secrets and never runs
 #            the caller's code.
@@ -37,8 +37,12 @@ on:
         description: 'Shell command run at the repository root before packing (install, build, test). Empty: no build step.'
         type: string
         default: 'npm ci'
+      package-build:
+        description: 'Shell command run in the directory of each package of `packages`, in build order, after `build` (`npm run build`). With `partial` a failure leaves that package and what depends on it out. Empty: none.'
+        type: string
+        default: ''
       post-build:
-        description: 'Shell command run after `build` that must succeed, also with `partial` (a type check of the result, docs). Empty: none.'
+        description: 'Shell command run at the root after the builds that must succeed, also with `partial` (a type check of the result). Empty: none.'
         type: string
         default: ''
       node-version:
@@ -62,7 +66,7 @@ on:
         type: string
         default: ''
       partial:
-        description: 'Publish what built: the build may fail, and the packages whose tarball lacks their entry files (main, module, types, exports, bin) are left out, with the packages that depend on them. The notice lists them.'
+        description: 'Publish what built (needs `package-build`): a package whose package-build fails, or whose tarball lacks its entry files (main, module, types, exports, bin), is left out with the packages that depend on it. The notice lists them.'
         type: boolean
         default: false
       github-release:
@@ -96,7 +100,6 @@ jobs:
     outputs:
       pending: ${{ steps.check.outputs.pending }}
       release: ${{ steps.check.outputs.release }}
-      build: ${{ steps.build.outcome }} # `failure` with partial: the job went on
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,6 +120,11 @@ jobs:
         with:
           package-manager-cache: false # no dependency cache in release builds
           node-version: ${{ inputs.node-version }}
+      - name: Check the inputs
+        if: inputs.partial && inputs.package-build == ''
+        run: |
+          echo "::error::partial needs package-build: the command that builds one package, run in each package directory"
+          exit 1
       - name: List the packages to publish
         id: check
         env:
@@ -152,12 +160,18 @@ jobs:
           fi
           echo "npm-publish requires a reviewer."
       - name: Build
-        id: build
         if: steps.check.outputs.pending == 'true' && inputs.build != ''
-        continue-on-error: ${{ inputs.partial }} # pack then leaves out what was not built
         env:
           BUILD_COMMAND: ${{ inputs.build }}
         run: eval "$BUILD_COMMAND"
+      - name: Build each package
+        if: steps.check.outputs.pending == 'true' && inputs.package-build != ''
+        env:
+          PACKAGE_BUILD: ${{ inputs.package-build }}
+          PACKAGES: ${{ inputs.packages }}
+          PARTIAL: ${{ inputs.partial }}
+          FAILED_FILE: ${{ runner.temp }}/release-failed/build.json
+        run: node "$RUNNER_TEMP/release-tools/scripts/build-packages.mjs"
       - name: Post-build
         if: steps.check.outputs.pending == 'true' && inputs.post-build != ''
         env:
@@ -169,9 +183,11 @@ jobs:
           RELEASE: ${{ steps.check.outputs.release }} # a step output: the build cannot change it
           CLEAN_PACKAGE: ${{ inputs.clean-package }}
           PARTIAL: ${{ inputs.partial }}
+          BUILD_FAILED_FILE: ${{ runner.temp }}/release-failed/build.json
           FAILED_FILE: ${{ runner.temp }}/release-failed/failed.json
         run: node "$RUNNER_TEMP/release-tools/scripts/pack.mjs" --out "$RUNNER_TEMP/tarballs"
-      # partial: the packages pack left out, for the notice (publish skips them by their missing tarball)
+      # partial: why pack left each package out, for the notice (which, like publish, takes the left-out packages from
+      # the tarballs)
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && inputs.partial && steps.check.outputs.pending == 'true' }}
         with:
@@ -216,18 +232,25 @@ jobs:
         with:
           name: npm-release-plan
           path: ${{ runner.temp }}/release-plan
+      # partial: the tarballs decide what is left out, as in publish; the reasons are text from pack
       - uses: actions/download-artifact@v8
-        if: needs.check.outputs.pending == 'true' && inputs.partial
-        continue-on-error: true # nothing was left out
+        if: needs.check.result == 'success' && needs.check.outputs.pending == 'true' && inputs.partial
+        with:
+          name: npm-release-tarballs
+          path: ${{ runner.temp }}/tarballs
+      - uses: actions/download-artifact@v8
+        if: needs.check.result == 'success' && needs.check.outputs.pending == 'true' && inputs.partial
+        continue-on-error: true # the reasons only
         with:
           name: npm-release-failed
           path: ${{ runner.temp }}/release-failed
       - name: Claude review and Discord notice
         env:
           RELEASE_FILE: ${{ runner.temp }}/release-plan/release.json
+          PARTIAL: ${{ inputs.partial }}
+          TARBALLS_DIR: ${{ runner.temp }}/tarballs
           FAILED_FILE: ${{ runner.temp }}/release-failed/failed.json
           BUILD_OK: ${{ needs.check.result == 'success' }}
-          BUILD_STEP: ${{ needs.check.outputs.build }}
           REVIEW_ACTOR: ${{ inputs.review-actor }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
