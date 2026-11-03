@@ -211,16 +211,28 @@ export function tarballName (name, version) {
 }
 
 /**
- * The files a package's manifest points at (main, module, browser, types, typings, bin and the targets in exports),
- * relative to the package and without `./`. Targets with `*` and directory targets (ending in `/`) are left out.
+ * The files a package's manifest points at (main, module, browser, types, typings, bin and the targets in exports), as
+ * groups of paths relative to the package: a group is there when one of its paths is. An exports fallback array is
+ * one group (any of its targets will do), and a target also counts with `.js` or `/index.js` after it, as Node
+ * resolves `main` (`.` is `index.js`). Targets with `*` and directory targets (ending in `/`) are left out.
  * @param {object} manifest
- * @returns {string[]}
+ * @returns {string[][]} sorted by their first path
  */
-export function entryFiles (manifest) {
-    const out = new Set()
+export function entryTargets (manifest) {
+    const groups = new Map()
+    const candidates = v => {
+        const n = path.posix.normalize(v).replace(/^\.\//, '')
+        return n === '.' || n === '' ? ['index.js'] : [n, `${n}.js`, `${n}/index.js`]
+    }
+    const usable = v => typeof v === 'string' && !v.includes('*') && !v.endsWith('/')
     const add = v => {
-        if (typeof v === 'string') {
-            if (!v.includes('*') && !v.endsWith('/')) out.add(path.posix.normalize(v).replace(/^\.\//, ''))
+        if (Array.isArray(v)) {
+            const any = v.filter(usable).flatMap(candidates)
+            if (any.length) groups.set(any.join('|'), any)
+            for (const x of v) if (x && typeof x === 'object') add(x)
+        } else if (usable(v)) {
+            const c = candidates(v)
+            groups.set(c.join('|'), c)
         } else if (v && typeof v === 'object') {
             for (const x of Object.values(v)) add(x)
         }
@@ -228,16 +240,36 @@ export function entryFiles (manifest) {
     for (const k of ['main', 'module', 'browser', 'types', 'typings']) if (typeof manifest[k] === 'string') add(manifest[k])
     add(manifest.bin)
     add(manifest.exports)
-    return [...out].sort()
+    return [...groups.values()].sort((a, b) => a[0].localeCompare(b[0]))
+}
+
+/** The entry targets (entryTargets) not in a tarball, given its file list (`package/…` paths), by their first path. */
+export function missingEntries (manifest, tarballFiles) {
+    const files = new Set(tarballFiles.map(f => f.replace(/^package\//, '')))
+    return entryTargets(manifest).filter(g => !g.some(f => files.has(f))).map(g => g[0])
+}
+
+/** The first of a package's listed dependencies (internalDeps) that is in `out`, or undefined. */
+export function blockingDep (p, out) {
+    return (p.internalDeps ?? []).find(d => out.has(d))
 }
 
 /**
- * The entry files (entryFiles) that are not in a tarball, given the tarball's file list (`package/…` paths).
- * An entry also counts with `.js` or `/index.js` after it, as Node resolves `main`.
+ * The packages to build for a release: the released ones (`names`) and the listed packages they need, transitively.
+ * @param {{name: string, internalDeps: string[]}[]} list every package of the input
+ * @param {Iterable<string>} names
+ * @returns {Set<string>}
  */
-export function missingEntries (manifest, tarballFiles) {
-    const files = new Set(tarballFiles.map(f => f.replace(/^package\//, '')))
-    return entryFiles(manifest).filter(e => !files.has(e) && !files.has(`${e}.js`) && !files.has(`${e}/index.js`))
+export function buildClosure (list, names) {
+    const byName = new Map(list.map(p => [p.name, p]))
+    const need = new Set()
+    const visit = n => {
+        if (need.has(n) || !byName.has(n)) return
+        need.add(n)
+        for (const d of byName.get(n).internalDeps) visit(d)
+    }
+    for (const n of names) visit(n)
+    return need
 }
 
 /**
@@ -252,7 +284,7 @@ export function partialPlan (packages, built) {
     const skipped = []
     const out = new Set()
     for (const p of packages) {
-        const dep = (p.internalDeps ?? []).find(d => out.has(d))
+        const dep = blockingDep(p, out)
         if (!built.has(p.name) || dep) {
             out.add(p.name)
             skipped.push({name: p.name, reason: dep ? `depends on ${dep}, which is not published` : 'not built'})
@@ -519,16 +551,17 @@ export async function fireReview ({url, token, text}) {
 
 /**
  * The commit of the last successful deployment to a GitHub environment, or '' (network, `gh`; the job needs
- * `deployments: read`). GitHub records a deployment for each job that runs in an environment; one that succeeded is
- * ACTIVE (the latest) or INACTIVE (replaced by a later one).
+ * `deployments: read`). GitHub records a deployment for each job that runs in an environment; one that succeeded has
+ * a SUCCESS status (a later one marks it inactive, a cancelled or rejected one never had it).
  */
 export function lastDeployedSha (repository, environment) {
     const [owner, name] = repository.split('/')
     const query = `query($owner: String!, $name: String!, $env: String!) { repository(owner: $owner, name: $name) {
-        deployments(environments: [$env], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { commitOid state } } } }`
+        deployments(environments: [$env], first: 50, orderBy: {field: CREATED_AT, direction: DESC}) {
+            nodes { commitOid statuses(first: 20) { nodes { state } } } } } }`
     try {
         const out = execFileSync('gh', ['api', 'graphql', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `env=${environment}`,
-            '--jq', '[.data.repository.deployments.nodes[] | select(.state == "ACTIVE" or .state == "INACTIVE")][0].commitOid // ""'],
+            '--jq', '[.data.repository.deployments.nodes[] | select(any(.statuses.nodes[]; .state == "SUCCESS"))][0].commitOid // ""'],
         {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']})
         return out.trim()
     } catch (e) {

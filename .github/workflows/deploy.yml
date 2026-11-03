@@ -9,10 +9,11 @@ name: deploy
 #   notify   starts the Claude review routine and posts the Discord notice: the approval link, the review and the
 #            commits since the last successful deployment of the environment; or that the check failed. Runs only
 #            the scripts of this repository; it has the secrets and never runs the caller's code.
-#   deploy   environment `environment` (the approval): a step of this repository puts the secrets named in
-#            `secrets-env` (the environment's, or the repository's through `secrets: inherit`) in the job's
-#            environment, then the `deploy` command runs with only those.
-#   failed   when the deploy failed: the Discord notice, from a job of its own (the deploy job ran caller code).
+#   deploy   environment `environment` (the approval): the `install` command (no secrets yet: dependency install
+#            scripts never see them), then a step of this repository puts the secrets named in `secrets-env` in the
+#            job's environment, then the `deploy` command runs with those.
+#   failed   when the deploy started and failed (not when the approval was rejected): the Discord notice, from a job
+#            of its own (the deploy job ran caller code).
 #
 # The jobs check out the scripts of this repository at the commit of this workflow file (job.workflow_repository,
 # job.workflow_sha), so a caller pinned to a tag or commit runs the matching scripts.
@@ -30,6 +31,10 @@ on:
         required: true
       check:
         description: 'Shell command run in working-directory before the approval (install, typecheck, tests), with no secrets. Empty: none.'
+        type: string
+        default: ''
+      install:
+        description: 'Shell command run in working-directory after the approval and before the secrets are set (`npm ci`), so dependency install scripts never get them. Empty: none.'
         type: string
         default: ''
       working-directory:
@@ -146,10 +151,27 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
+    outputs:
+      started: ${{ steps.approved.outputs.started }} # the approval was given and the deploy began
     steps:
+      # a step runs only once the environment is approved
+      - name: Approved
+        id: approved
+        run: echo "started=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ inputs.node-version }}
+      - name: Install
+        if: inputs.install != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          INSTALL_COMMAND: ${{ inputs.install }}
+        run: eval "$INSTALL_COMMAND"
+      # after the install (its scripts cannot change these), outside the workspace
       - name: Check out the release scripts
         uses: actions/checkout@v7
         with:
@@ -160,11 +182,7 @@ jobs:
           persist-credentials: false
       - name: Move the release scripts out of the workspace
         run: mv .release-tools "$RUNNER_TEMP/release-tools"
-      - uses: actions/setup-node@v7
-        with:
-          package-manager-cache: false
-          node-version: ${{ inputs.node-version }}
-      # its own step, before any caller code: the deploy command gets the listed secrets only
+      # its own step: the deploy command gets the listed secrets only (export-secrets.mjs)
       - name: Secrets for the deploy
         env:
           SECRETS_ENV: ${{ inputs.secrets-env }}
@@ -178,7 +196,8 @@ jobs:
 
   failed:
     needs: deploy
-    if: ${{ failure() && needs.deploy.result == 'failure' }}
+    # a rejected or timed-out approval fails the deploy job too, before any step: no notice then
+    if: ${{ failure() && needs.deploy.result == 'failure' && needs.deploy.outputs.started == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

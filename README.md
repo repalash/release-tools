@@ -110,15 +110,19 @@ jobs:
   deploy:
     permissions:
       contents: read
-      deployments: read # the commits since the last deployment
+      deployments: read # required: the commits since the last deployment
     uses: repalash/release-tools/.github/workflows/deploy.yml@v1
     with:
       environment: production
       working-directory: services/api
       check: npm ci && npm test
-      deploy: npm ci && npm run deploy
-      secrets-env: CLOUDFLARE_API_TOKEN
-    secrets: inherit
+      install: npm ci
+      deploy: npm run deploy
+      secrets-env: CLOUDFLARE_API_TOKEN # a secret of the production environment
+    secrets: # by name, not `inherit`: the deploy job then holds no other repository secret
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
+      CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
 ```
 
 | Input | Default | |
@@ -126,13 +130,14 @@ jobs:
 | `environment` | (required) | The GitHub environment of the deploy. It must have a required reviewer, or the check stops. |
 | `deploy` | (required) | Command run in `working-directory` after the approval. |
 | `check` | | Command run in `working-directory` before the approval, with no secrets. |
+| `install` | | Command run in `working-directory` after the approval and before the secrets are set (`npm ci`), so dependency install scripts never get them. |
 | `working-directory` | `.` | The deployed project; the commit list covers it. |
 | `secrets-env` | | Secrets the deploy command gets as environment variables, and the only ones it gets: a step of this repository puts them in the job's environment before your command runs. Put them on the environment, so only an approved run sees them. A missing one stops the deploy before it runs. |
 | `name` | `<repository> (<environment>)` | What is deployed, in the notices. |
 | `node-version` | `24` | Node.js for the check and the deploy. |
 | `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
 
-The Discord and Claude secrets are the same as for releases. The review routine gets a request that starts with
+The caller job needs `deployments: read`. The Discord and Claude secrets are the same as for releases. The review routine gets a request that starts with
 `deploy review` (the release requests start with `npm release review`), so its instructions should cover both.
 
 ## Configuration
@@ -183,7 +188,7 @@ The calling job must grant `contents: write` and `id-token: write`: a called wor
 - The check job runs your build with no secrets and a read-only token, and stops when `npm-publish` has no required reviewer.
 - The notify job holds the secrets and runs only the scripts of this repository, never your code. The publish job gets only `DISCORD_WEBHOOK_URL`, for the notice that it failed.
 - The publish job runs only the scripts of this repository and publishes the checked tarballs with `npm publish --ignore-scripts`.
-- Deploys: the check job runs your check with no secrets and a read-only token; the notify job runs only these scripts (it reads your history for the commit list); after the approval, a script of this repository puts the secrets in `secrets-env` in the deploy job's environment, then your deploy command runs with those only; the notice of a failed deploy comes from a job of its own.
+- Deploys: the check job runs your check with no secrets and a read-only token; the notify job runs only these scripts (it reads your history for the commit list); after the approval, `install` runs with no secrets, then a script of this repository puts the secrets in `secrets-env` in the job's environment and your deploy command runs with those; the notice of a failed deploy comes from a job of its own. The runner of the deploy job holds every secret the job has (code with root on it could read them), so keep the deploy's secrets on the environment and pass the notice secrets by name, as in the example, rather than `secrets: inherit`.
 - Partial releases: the build runs your code, so a build could write anything; what the notice lists and what is published both come from the tarballs the check job uploaded, never from a list the build could rewrite.
 - Pin callers to a tag (`@v1`) or a commit SHA. The jobs check out these scripts at the commit of the called workflow (`job.workflow_repository`, `job.workflow_sha`), so the workflow and its scripts always match. These contexts are not available on GitHub Enterprise Server.
 

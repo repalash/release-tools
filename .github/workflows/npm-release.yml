@@ -38,7 +38,7 @@ on:
         type: string
         default: 'npm ci'
       package-build:
-        description: 'Shell command run in the directory of each package of `packages`, in build order, after `build` (`npm run build`). With `partial` a failure leaves that package and what depends on it out. Empty: none.'
+        description: 'Shell command run in the directory of each package the release needs (the released ones and the listed packages they depend on), in build order, after `build` (`npm run build`). With `partial` a failure leaves that package and what depends on it out. Empty: none.'
         type: string
         default: ''
       post-build:
@@ -168,6 +168,7 @@ jobs:
         if: steps.check.outputs.pending == 'true' && inputs.package-build != ''
         env:
           PACKAGE_BUILD: ${{ inputs.package-build }}
+          RELEASE: ${{ steps.check.outputs.release }} # a step output: the build cannot change it
           PACKAGES: ${{ inputs.packages }}
           PARTIAL: ${{ inputs.partial }}
           FAILED_FILE: ${{ runner.temp }}/release-failed/build.json

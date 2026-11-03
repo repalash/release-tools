@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-    changelogEntry, defaultTagFormat, deployDiscordText, deployReviewText, discordText, distTag, entryFiles, firePayload,
+    changelogEntry, defaultTagFormat, blockingDep, buildClosure, deployDiscordText, deployReviewText, discordText, distTag, entryTargets, firePayload,
     formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
     readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
     tarballName, validateTagFormat,
@@ -255,17 +255,22 @@ test('tagFormatFor: the root package can keep its own format', () => {
     assert.deepEqual(tagMatchPatterns('v{version}', 'core'), ['v[0-9]*', 'v[0-9]*'])
 })
 
-test('entryFiles and missingEntries', () => {
+test('entryTargets and missingEntries', () => {
     const manifest = {
         main: 'dist/index.js', module: './dist/index.mjs', types: 'dist/index.d.ts', bin: {cli: './bin/cli.js'},
         exports: {'.': {types: './lib/index.d.ts', import: './lib/index.js', require: './dist/index.js'}, './dist/': './dist/', './*': './lib/*.js', './package.json': './package.json'},
     }
-    assert.deepEqual(entryFiles(manifest), ['bin/cli.js', 'dist/index.d.ts', 'dist/index.js', 'dist/index.mjs', 'lib/index.d.ts', 'lib/index.js', 'package.json'])
+    assert.deepEqual(entryTargets(manifest).map(g => g[0]), ['bin/cli.js', 'dist/index.d.ts', 'dist/index.js', 'dist/index.mjs', 'lib/index.d.ts', 'lib/index.js', 'package.json'])
     const all = ['package/package.json', 'package/bin/cli.js', 'package/dist/index.js', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/lib/index.js', 'package/lib/index.d.ts']
     assert.deepEqual(missingEntries(manifest, all), [])
     assert.deepEqual(missingEntries(manifest, all.filter(f => !f.startsWith('package/dist/'))), ['dist/index.d.ts', 'dist/index.js', 'dist/index.mjs'])
     assert.deepEqual(missingEntries({main: 'dist'}, ['package/dist/index.js']), []) // Node resolves main to dist/index.js
-    assert.deepEqual(entryFiles({name: 'x'}), [])
+    assert.deepEqual(missingEntries({main: '.'}, ['package/index.js']), [])
+    assert.deepEqual(missingEntries({main: './'}, []), []) // a directory target is left out
+    // a fallback array: any of its targets will do
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', './b.js']}}, ['package/b.js']), [])
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, ['package/a.js']), ['c.mjs'])
+    assert.deepEqual(entryTargets({name: 'x'}), [])
 })
 
 test('partialPlan leaves out what has no tarball and what depends on it', () => {
@@ -346,4 +351,12 @@ test('failureText: what failed', () => {
 test('hasCommit', () => {
     assert.equal(hasCommit('.', 'HEAD'), true)
     assert.equal(hasCommit('.', '0123456789abcdef0123456789abcdef01234567'), false)
+})
+
+test('blockingDep and buildClosure', () => {
+    assert.equal(blockingDep({internalDeps: ['a', 'b']}, new Set(['b'])), 'b')
+    assert.equal(blockingDep({}, new Set(['b'])), undefined)
+    const list = [{name: 'core', internalDeps: []}, {name: 'ui', internalDeps: ['core']}, {name: 'editor', internalDeps: ['ui']}, {name: 'other', internalDeps: ['core']}]
+    assert.deepEqual([...buildClosure(list, ['editor'])].sort(), ['core', 'editor', 'ui'])
+    assert.deepEqual([...buildClosure(list, ['other', 'missing'])].sort(), ['core', 'other'])
 })

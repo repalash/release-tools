@@ -1,17 +1,19 @@
-// Runs the `package-build` command in the directory of each package of the `packages` input (all of them: a released
-// package can need one that is not released), in build order (a package after the listed ones it depends on).
+// Runs the `package-build` command in the directory of each package the release needs: the released packages (the
+// release JSON) and the packages of the `packages` input they depend on, transitively (one that is not released is
+// built too: the released ones build against it). In build order (a package after the listed ones it depends on).
 //
 // Without --partial the first failure stops the run. With --partial a failed package is noted and the run goes on;
 // a package whose listed dependency failed or was skipped is skipped. The packages that did not build are written to
 // --failed-file as [{name, version, error}]; pack.mjs leaves them out of the release.
 //
 // Usage: node build-packages.mjs [--root <dir>] [--packages <input>] [--partial --failed-file <file>]
-// Env: PACKAGE_BUILD (the command, run with bash), and PACKAGES, PARTIAL, FAILED_FILE for the options.
+// Env: PACKAGE_BUILD (the command, run with bash), RELEASE_FILE or RELEASE (the JSON from check.mjs), and PACKAGES,
+// PARTIAL, FAILED_FILE for the options.
 import {parseArgs} from 'node:util'
 import path from 'node:path'
 import fs from 'node:fs'
 import {spawnSync} from 'node:child_process'
-import {readPackages} from './lib.mjs'
+import {blockingDep, buildClosure, parseRelease, readPackages, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -26,10 +28,14 @@ if (!command) throw new Error('PACKAGE_BUILD is empty')
 if (args.partial && !args['failed-file']) throw new Error('--partial needs --failed-file')
 
 const root = path.resolve(args.root)
+const list = readPackages(root, args.packages)
+const need = buildClosure(list, parseRelease(readRelease()).packages.map(p => p.name))
 const failed = []
-for (const p of readPackages(root, args.packages)) {
-    const dep = p.internalDeps.find(d => failed.some(f => f.name === d))
+const out = new Set()
+for (const p of list.filter(x => need.has(x.name))) {
+    const dep = blockingDep(p, out)
     if (dep) {
+        out.add(p.name)
         failed.push({name: p.name, version: p.version, error: `depends on ${dep}, which did not build`})
         console.log(`\n✗ ${p.name} (${p.dir}): skipped, it depends on ${dep}`)
         continue
@@ -38,6 +44,7 @@ for (const p of readPackages(root, args.packages)) {
     const res = spawnSync('bash', ['-eo', 'pipefail', '-c', command], {cwd: path.join(root, p.dir), stdio: 'inherit'})
     if (res.status === 0) continue
     if (!args.partial) process.exit(res.status ?? 1)
+    out.add(p.name)
     failed.push({name: p.name, version: p.version, error: `package-build exited with ${res.status ?? res.signal}`})
     console.log(`::warning::${p.name} did not build (exit ${res.status ?? res.signal}); a partial release leaves it out`)
 }
