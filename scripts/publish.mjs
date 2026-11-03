@@ -1,4 +1,4 @@
-// Publishes the tarballs of the release (env RELEASE, the JSON from check.mjs) in the listed order,
+// Publishes the tarballs of the release (the JSON from check.mjs: file RELEASE_FILE or env RELEASE) in the listed order,
 // then marks each published commit: a GitHub release with the tarball (--github-release) or a tag.
 //
 // - Authentication is npm trusted publishing (OIDC): the job needs `id-token: write`, npm >= 11.5.1.
@@ -16,7 +16,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {isPublished, parseRelease} from './lib.mjs'
+import {isPublished, parseRelease, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -27,7 +27,7 @@ const {values: args} = parseArgs({
 })
 if (!args.tarballs) throw new Error('--tarballs is required')
 
-const release = parseRelease(process.env.RELEASE)
+const release = parseRelease(readRelease())
 const dryRun = args['dry-run']
 const repo = process.env.GITHUB_REPOSITORY
 const sha = process.env.GITHUB_SHA

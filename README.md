@@ -31,6 +31,11 @@ A release that waits for approval, or that fails, posts a message to your channe
 > Log: https://github.com/repalash/ts-browser-helpers/actions/runs/…<br>
 > \- ts-browser-helpers@0.21.1: no CHANGELOG.md section
 
+Any other failure of a release step (the check script, the notice itself, the publish after approval) posts the error with the log link:
+
+> ❌ repalash/ts-browser-helpers: the release publish failed<br>
+> Log: https://github.com/repalash/ts-browser-helpers/actions/runs/…
+
 The list shows the commits since the previous release of the package. The Claude review line appears when a Claude Code routine is set up: the workflow starts a session that reviews the release while it waits for you.
 
 ## Quick start
@@ -112,7 +117,7 @@ To rotate one secret in several repositories: `scripts/setup-repos.sh --set-secr
 - A CHANGELOG section starts at a heading (`#` to `###`) whose first word is the version: `## [1.2.3] - 2026-01-01`, `## v1.2.3`, `# [1.2.3](link) (date)`. An empty section counts as missing.
 - A prerelease (`1.0.0-beta.1`) gets the dist-tag `next`, unless `publishConfig.tag` sets another one, and a prerelease GitHub release.
 - In workspaces, private packages are skipped, and `build` must build every package that the released ones need.
-- Output: `release`, the JSON of the release (`packages` is empty when nothing was pending).
+- Output: `release`, the JSON of the release (`packages` is empty when nothing was pending). GitHub empties a job output that contains a string it masks, which a changelog can mention, so the jobs of the workflow pass the JSON as the artifact `npm-release-plan` instead, and `release` can be empty.
 
 ### Setup by hand
 
@@ -125,7 +130,7 @@ The calling job must grant `contents: write` and `id-token: write`: a called wor
 ### Security
 
 - The check job runs your build with no secrets and a read-only token, and stops when `npm-publish` has no required reviewer.
-- The notify job holds the secrets and runs only the scripts of this repository, never your code.
+- The notify job holds the secrets and runs only the scripts of this repository, never your code. The publish job gets only `DISCORD_WEBHOOK_URL`, for the notice that it failed.
 - The publish job runs only the scripts of this repository and publishes the checked tarballs with `npm publish --ignore-scripts`.
 - Pin callers to a tag (`@v1`) or a commit SHA. The jobs check out these scripts at the commit of the called workflow (`job.workflow_repository`, `job.workflow_sha`), so the workflow and its scripts always match. These contexts are not available on GitHub Enterprise Server.
 

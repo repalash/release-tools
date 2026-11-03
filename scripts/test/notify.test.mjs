@@ -4,6 +4,8 @@ import http from 'node:http'
 import path from 'node:path'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
+import fs from 'node:fs'
+import os from 'node:os'
 
 const script = path.join(import.meta.dirname, '..', 'notify.mjs')
 const run = promisify(execFile)
@@ -89,5 +91,55 @@ test('another actor gets no review; no webhook means no notice', async () => {
         assert.match(stdout, /DISCORD_WEBHOOK_URL is not set; no notice/)
     } finally {
         s.close()
+    }
+})
+
+const gh = {GITHUB_REPOSITORY: 'owner/repo', GITHUB_SERVER_URL: 'https://github.com', GITHUB_RUN_ID: '7'}
+
+test('an error is posted to Discord, then fails the step (here: the release output is empty)', async () => {
+    const s = await server()
+    try {
+        await assert.rejects(run(process.execPath, [script], {env: env(s.base, {...gh, RELEASE: ''})}), {code: 1})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release notice failed: the release JSON is missing (RELEASE_FILE or RELEASE)\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
+
+test('a check that failed before listing the packages gets a notice', async () => {
+    const s = await server()
+    try {
+        await run(process.execPath, [script], {env: env(s.base, {...gh, RELEASE: '', BUILD_OK: 'false'})})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release check failed\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
+
+test('--failed publish posts that the publish failed', async () => {
+    const s = await server()
+    try {
+        await run(process.execPath, [script, '--failed', 'publish'], {env: {PATH: process.env.PATH, ...gh, DISCORD_WEBHOOK_URL: `${s.base}/discord`}})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.equal(s.requests[0].body.content, '❌ owner/repo: the release publish failed\nLog: https://github.com/owner/repo/actions/runs/7')
+    } finally {
+        s.close()
+    }
+})
+
+test('reads the release from RELEASE_FILE (the artifact), also when the job output was dropped', async () => {
+    const s = await server()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'))
+    try {
+        const file = path.join(dir, 'release.json')
+        fs.writeFileSync(file, JSON.stringify({...release, packages: [{...release.packages[0], changelog: 'Bearer not-set is refused'}]}))
+        await run(process.execPath, [script], {env: env(s.base, {RELEASE: '', RELEASE_FILE: file, CLAUDE_REVIEW_FIRE_URL: ''})})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.match(s.requests[0].body.content, /\*\*pkg@1\.0\.1\*\* is built and waits for approval/)
+    } finally {
+        s.close()
+        fs.rmSync(dir, {recursive: true, force: true})
     }
 })

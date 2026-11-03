@@ -4,16 +4,27 @@
 //    A failed request is logged and does not fail the step.
 // 2. Posts a Discord notice with the approval link, the review session link and the commits.
 //    No notice when DISCORD_WEBHOOK_URL is unset. A failed post fails the step.
+// Any error (RELEASE missing, a failed request) is posted to Discord too, then fails the step.
+// `--failed <step>`: only posts that the release <step> failed, for the jobs that have no notice of
+// their own (the workflow runs it when such a job fails).
 //
-// Env: RELEASE (JSON from check.mjs), BUILD_OK ('true'), REVIEW_ACTOR, DISCORD_WEBHOOK_URL,
+// Env: RELEASE_FILE or RELEASE (JSON from check.mjs), BUILD_OK ('true'), REVIEW_ACTOR, DISCORD_WEBHOOK_URL,
 // CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the GitHub Actions defaults.
-import {discordText, firePayload, parseRelease, reviewEligible, reviewText} from './lib.mjs'
+import {parseArgs} from 'node:util'
+import {discordText, failureText, firePayload, parseRelease, readRelease, reviewEligible, reviewText} from './lib.mjs'
 
 const env = process.env
-const release = parseRelease(env.RELEASE)
-const buildOk = env.BUILD_OK === 'true'
 
-async function startReview () {
+async function postDiscord (content) {
+    const res = await fetch(env.DISCORD_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({content, allowed_mentions: {parse: []}}),
+    })
+    if (!res.ok) throw new Error(`Discord webhook: HTTP ${res.status}`)
+}
+
+async function startReview (release, buildOk) {
     const {fire, reason} = reviewEligible({
         buildOk,
         event: env.GITHUB_EVENT_NAME,
@@ -49,20 +60,34 @@ async function startReview () {
     return ''
 }
 
-const session = await startReview()
-
-if (!env.DISCORD_WEBHOOK_URL) {
-    console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')
-    process.exit(0)
+async function notify () {
+    const buildOk = env.BUILD_OK === 'true'
+    const json = readRelease(env)
+    // the check job failed before it wrote the release (no packages listed, nothing built)
+    if (!buildOk && !json) {
+        if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: 'check'}))
+        else console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice that the check failed.')
+        return
+    }
+    const release = parseRelease(json)
+    const session = await startReview(release, buildOk)
+    if (!env.DISCORD_WEBHOOK_URL) {
+        console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')
+        return
+    }
+    await postDiscord(discordText({ok: buildOk, repository: release.repository, runUrl: release.runUrl, packages: release.packages, errors: release.errors, session}))
+    console.log('Discord notice sent.')
 }
-const content = discordText({ok: buildOk, repository: release.repository, runUrl: release.runUrl, packages: release.packages, errors: release.errors, session})
-const res = await fetch(env.DISCORD_WEBHOOK_URL, {
-    method: 'POST',
-    headers: {'content-type': 'application/json'},
-    body: JSON.stringify({content, allowed_mentions: {parse: []}}),
-})
-if (!res.ok) {
-    console.error(`Discord webhook: HTTP ${res.status}`)
+
+const {values: args} = parseArgs({options: {failed: {type: 'string'}}})
+try {
+    if (!args.failed) await notify()
+    else if (env.DISCORD_WEBHOOK_URL) await postDiscord(failureText({step: args.failed}))
+    else console.log(`::warning::DISCORD_WEBHOOK_URL is not set; no notice that the ${args.failed} failed.`)
+} catch (e) {
+    console.error(e)
+    if (!args.failed && env.DISCORD_WEBHOOK_URL) {
+        await postDiscord(failureText({step: 'notice', error: e.message})).catch(e2 => console.error(e2.message))
+    }
     process.exit(1)
 }
-console.log('Discord notice sent.')

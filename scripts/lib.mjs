@@ -312,7 +312,26 @@ export function setOutputs (values) {
 
 /** Parses the RELEASE JSON that check.mjs writes. */
 export function parseRelease (json) {
-    const release = JSON.parse(json || '{}')
-    if (!Array.isArray(release.packages)) throw new Error('RELEASE has no packages array')
+    if (!json) throw new Error('the release JSON is missing (RELEASE_FILE or RELEASE)')
+    const release = JSON.parse(json)
+    if (!Array.isArray(release.packages)) throw new Error('the release JSON has no packages array')
     return release
+}
+
+/** The release JSON text: the file RELEASE_FILE when it exists, else env RELEASE, else ''. */
+export function readRelease (env = process.env) {
+    if (env.RELEASE_FILE && fs.existsSync(env.RELEASE_FILE)) return fs.readFileSync(env.RELEASE_FILE, 'utf8')
+    return env.RELEASE || ''
+}
+
+/**
+ * The Discord notice for a release step that failed without its own notice: the check script, the
+ * notice itself, or the publish after approval. Reads only the GitHub Actions defaults, not RELEASE.
+ * @returns {string} at most 2000 characters (the Discord limit)
+ */
+export function failureText ({step, error = '', env = process.env}) {
+    const {GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID} = env
+    // the error is cut, not the log link
+    const detail = error.length > 1500 ? `: ${error.slice(0, 1500)}…` : error ? `: ${error}` : ''
+    return `❌ ${GITHUB_REPOSITORY}: the release ${step} failed${detail}\nLog: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
 }
