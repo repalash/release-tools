@@ -25,7 +25,7 @@ jobs:
     uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
     with:
       packages: . plugins/* !plugins/plugin-template-*
-      build: npm ci && npx turbo run build --continue=dependencies-successful && npm run build-examples
+      build: npm ci && npm run build:release # turbo build --continue, then the examples type check
       post-build: npm run test:types && npm run docs-all
       partial: true
       clean-package: true
