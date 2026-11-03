@@ -85,17 +85,20 @@ export function expandPackageDirs (root, entries) {
 /**
  * Sorts packages so that each one comes after the listed packages it depends on
  * (dependencies, peerDependencies, optionalDependencies and devDependencies).
- * Sets `internalDeps` on each package. Throws on a dependency cycle.
+ * Sets `internalDeps` on each package (all four kinds: the build order) and `runtimeDeps` (without devDependencies:
+ * what a published package needs, for partial releases). Throws on a dependency cycle.
  * @template {{name: string, manifest: object}} P
  * @param {P[]} list
- * @returns {(P & {internalDeps: string[]})[]}
+ * @returns {(P & {internalDeps: string[], runtimeDeps: string[]})[]}
  */
 export function sortByDependencies (list) {
     const byName = new Map(list.map(p => [p.name, p]))
     for (const p of list) {
         const m = p.manifest
-        const deps = {...m.dependencies, ...m.peerDependencies, ...m.optionalDependencies, ...m.devDependencies}
-        p.internalDeps = Object.keys(deps).filter(d => byName.has(d) && d !== p.name)
+        const runtime = {...m.dependencies, ...m.peerDependencies, ...m.optionalDependencies}
+        const internal = names => Object.keys(names).filter(d => byName.has(d) && d !== p.name)
+        p.internalDeps = internal({...runtime, ...m.devDependencies})
+        p.runtimeDeps = internal(runtime)
     }
     const sorted = []
     const done = new Set()
@@ -114,7 +117,7 @@ export function sortByDependencies (list) {
  * Reads the packages of the `packages` input (file system), in build order.
  * @param {string} root
  * @param {string} input
- * @returns {{name: string, version: string, dir: string, private: boolean, manifest: object, internalDeps: string[]}[]}
+ * @returns {{name: string, version: string, dir: string, private: boolean, manifest: object, internalDeps: string[], runtimeDeps: string[]}[]}
  */
 export function readPackages (root, input) {
     const list = expandPackageDirs(root, parsePackagesInput(input)).map(dir => {
@@ -210,11 +213,15 @@ export function tarballName (name, version) {
     return `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`
 }
 
+/** The exports conditions a consumer resolves; others (`source`, `development`, custom ones) may point outside `files`. */
+const RUNTIME_CONDITIONS = new Set(['import', 'require', 'default', 'node', 'browser', 'module', 'types', 'deno', 'worker', 'module-sync'])
+
 /**
- * The files a package's manifest points at (main, module, browser, types, typings, bin and the targets in exports), as
- * groups of paths relative to the package: a group is there when one of its paths is. An exports fallback array is
- * one group (any of its targets will do), and a target also counts with `.js` or `/index.js` after it, as Node
- * resolves `main` (`.` is `index.js`). Targets with `*` and directory targets (ending in `/`) are left out.
+ * The files a package's manifest points at (main, module, browser, types, typings, bin, and the exports targets of the
+ * conditions consumers resolve), as groups of paths relative to the package: a group is there when one of its paths is.
+ * An exports fallback array is one group (any of its targets will do, also those in its condition objects), and a target
+ * also counts with `.js` or `/index.js` after it, as Node resolves `main` (`.` is `index.js`). Targets with `*` and
+ * directory targets (ending in `/`) are left out.
  * @param {object} manifest
  * @returns {string[][]} sorted by their first path
  */
@@ -225,20 +232,22 @@ export function entryTargets (manifest) {
         return n === '.' || n === '' ? ['index.js'] : [n, `${n}.js`, `${n}/index.js`]
     }
     const usable = v => typeof v === 'string' && !v.includes('*') && !v.endsWith('/')
+    const group = paths => { if (paths.length) groups.set(paths.join('|'), paths) }
+    /** The targets of an exports value: its strings, and those of its runtime conditions and fallbacks, flat. */
+    const flat = v => Array.isArray(v) ? v.flatMap(flat)
+        : usable(v) ? [v]
+            : v && typeof v === 'object' ? Object.entries(v).filter(([k]) => k.startsWith('.') || RUNTIME_CONDITIONS.has(k)).flatMap(([, x]) => flat(x)) : []
+    /** Each exports target is its own group, but a fallback array is one. */
     const add = v => {
-        if (Array.isArray(v)) {
-            const any = v.filter(usable).flatMap(candidates)
-            if (any.length) groups.set(any.join('|'), any)
-            for (const x of v) if (x && typeof x === 'object') add(x)
-        } else if (usable(v)) {
-            const c = candidates(v)
-            groups.set(c.join('|'), c)
-        } else if (v && typeof v === 'object') {
-            for (const x of Object.values(v)) add(x)
+        if (Array.isArray(v)) group(flat(v).flatMap(candidates))
+        else if (usable(v)) group(candidates(v))
+        else if (v && typeof v === 'object') {
+            for (const [k, x] of Object.entries(v)) if (k.startsWith('.') || RUNTIME_CONDITIONS.has(k)) add(x)
         }
     }
-    for (const k of ['main', 'module', 'browser', 'types', 'typings']) if (typeof manifest[k] === 'string') add(manifest[k])
-    add(manifest.bin)
+    for (const k of ['main', 'module', 'browser', 'types', 'typings']) if (usable(manifest[k])) group(candidates(manifest[k]))
+    if (usable(manifest.bin)) group(candidates(manifest.bin))
+    else if (manifest.bin && typeof manifest.bin === 'object') for (const x of Object.values(manifest.bin)) if (usable(x)) group(candidates(x))
     add(manifest.exports)
     return [...groups.values()].sort((a, b) => a[0].localeCompare(b[0]))
 }
@@ -249,9 +258,12 @@ export function missingEntries (manifest, tarballFiles) {
     return entryTargets(manifest).filter(g => !g.some(f => files.has(f))).map(g => g[0])
 }
 
-/** The first of a package's listed dependencies (internalDeps) that is in `out`, or undefined. */
+/**
+ * The first of the listed packages a published package needs (runtimeDeps: not its devDependencies; internalDeps for
+ * a release JSON written before runtimeDeps) that is in `out`, or undefined.
+ */
 export function blockingDep (p, out) {
-    return (p.internalDeps ?? []).find(d => out.has(d))
+    return (p.runtimeDeps ?? p.internalDeps ?? []).find(d => out.has(d))
 }
 
 /**
@@ -293,6 +305,12 @@ export function partialPlan (packages, built) {
         }
     }
     return {publish, skipped}
+}
+
+/** partialPlan from the tarballs in `dir` (file system): what publish.mjs publishes, and what the notice lists. */
+export function tarballPlan (packages, dir) {
+    if (!fs.existsSync(dir)) throw new Error(`the tarballs are not in ${dir}`)
+    return partialPlan(packages, new Set(packages.filter(p => fs.existsSync(path.join(dir, p.tarball))).map(p => p.name)))
 }
 
 /** True when this exact version is on the npm registry (network). */

@@ -73,8 +73,10 @@ for (const p of readPackages(root, input)) {
         previousTag: prev,
         commits: commitsSince(root, prev, p.dir),
         changelog: changelog ? changelog.slice(0, 20000) : '',
-        // the packages of this repository it needs (a partial release leaves it out when one of them is not published)
+        // the packages of this repository it builds with, and those it needs when published (a partial release leaves
+        // it out when one of these is not published)
         internalDeps: p.internalDeps,
+        runtimeDeps: p.runtimeDeps,
     })
     console.log(`→ ${p.name}@${p.version} is not on npm (tag ${formatTag(own, p)}, previous ${prev || 'none'})`)
 }

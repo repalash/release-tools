@@ -18,7 +18,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {isPublished, parseRelease, partialPlan, readRelease} from './lib.mjs'
+import {isPublished, parseRelease, readRelease, tarballPlan} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -95,8 +95,7 @@ function markRelease (p, tarball) {
 if (!dryRun) checkNpmVersion()
 let packages = release.packages
 if (args.partial) {
-    const built = new Set(packages.filter(p => fs.existsSync(path.resolve(args.tarballs, p.tarball))).map(p => p.name))
-    const plan = partialPlan(packages, built)
+    const plan = tarballPlan(packages, path.resolve(args.tarballs))
     for (const s of plan.skipped) console.log(`${s.name}: skipped, ${s.reason}`)
     packages = plan.publish
 }

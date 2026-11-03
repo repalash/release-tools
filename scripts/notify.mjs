@@ -15,23 +15,29 @@
 // Env: RELEASE_FILE or RELEASE (JSON from check.mjs), PARTIAL, TARBALLS_DIR, FAILED_FILE, BUILD_OK ('true'),
 // REVIEW_ACTOR, DISCORD_WEBHOOK_URL, CLAUDE_REVIEW_FIRE_URL, CLAUDE_REVIEW_TOKEN, and the GitHub Actions defaults.
 import fs from 'node:fs'
-import path from 'node:path'
 import {parseArgs} from 'node:util'
-import {discordText, failureText, fireReview, parseRelease, partialPlan, postDiscord, readRelease, reviewEligible, reviewText} from './lib.mjs'
+import {discordText, failureText, fireReview, parseRelease, postDiscord, readRelease, reviewEligible, reviewText, tarballPlan} from './lib.mjs'
 
 const env = process.env
 const discord = content => postDiscord(env.DISCORD_WEBHOOK_URL, content)
 
-/** The packages a partial release leaves out: those publish.mjs will skip, with pack.mjs's reason when it gave one. */
-function leftOut (release) {
+/** Why pack.mjs left each package out (FAILED_FILE), by name: text for the notice, never what decides it. */
+function packReasons () {
+    const file = env.FAILED_FILE
+    return new Map((file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : []).map(f => [f.name, String(f.error)]))
+}
+
+/**
+ * The packages a partial release leaves out ({name, version, error}). Built: those publish.mjs will skip, from the
+ * tarballs (tarballPlan; it throws when they could not be downloaded). Failed: pack's list, for the reasons.
+ */
+function leftOut (release, buildOk) {
     if (env.PARTIAL !== 'true') return []
-    const dir = env.TARBALLS_DIR || ''
-    const built = new Set(release.packages.filter(p => dir && fs.existsSync(path.join(dir, p.tarball))).map(p => p.name))
-    const reasons = new Map((env.FAILED_FILE && fs.existsSync(env.FAILED_FILE) ? JSON.parse(fs.readFileSync(env.FAILED_FILE, 'utf8')) : [])
-        .map(f => [f.name, String(f.error)]))
-    return partialPlan(release.packages, built).skipped.map(({name, reason}) => ({
-        name, version: release.packages.find(p => p.name === name).version, error: reasons.get(name) ?? reason,
-    }))
+    const reasons = packReasons()
+    const version = name => release.packages.find(p => p.name === name)?.version ?? ''
+    if (!buildOk) return [...reasons].map(([name, error]) => ({name, version: version(name), error}))
+    return tarballPlan(release.packages, env.TARBALLS_DIR || '').skipped
+        .map(({name, reason}) => ({name, version: version(name), error: reasons.get(name) ?? reason}))
 }
 
 async function startReview (release, buildOk, failed) {
@@ -60,7 +66,7 @@ async function notify () {
         return
     }
     const release = parseRelease(json)
-    const failed = buildOk ? leftOut(release) : []
+    const failed = leftOut(release, buildOk)
     const session = await startReview(release, buildOk, failed)
     if (!env.DISCORD_WEBHOOK_URL) {
         console.log('::warning::DISCORD_WEBHOOK_URL is not set; no notice. Repository setup: https://github.com/repalash/release-tools#repository-setup')

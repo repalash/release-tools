@@ -7,7 +7,7 @@ import {
     changelogEntry, defaultTagFormat, blockingDep, buildClosure, deployDiscordText, deployReviewText, discordText, distTag, entryTargets, firePayload,
     formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
     readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
-    tarballName, validateTagFormat,
+    tarballName, tarballPlan, validateTagFormat,
 } from '../lib.mjs'
 
 function repo (files) {
@@ -269,7 +269,10 @@ test('entryTargets and missingEntries', () => {
     assert.deepEqual(missingEntries({main: './'}, []), []) // a directory target is left out
     // a fallback array: any of its targets will do
     assert.deepEqual(missingEntries({exports: {'.': ['./a.js', './b.js']}}, ['package/b.js']), [])
-    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, ['package/a.js']), ['c.mjs'])
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, ['package/c.mjs']), [])
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, []), ['a.js'])
+    // conditions consumers do not resolve may point outside `files`
+    assert.deepEqual(missingEntries({exports: {'.': {source: './src/index.ts', development: './src/dev.js', import: './dist/index.mjs'}}}, ['package/dist/index.mjs']), [])
     assert.deepEqual(entryTargets({name: 'x'}), [])
 })
 
@@ -359,4 +362,28 @@ test('blockingDep and buildClosure', () => {
     const list = [{name: 'core', internalDeps: []}, {name: 'ui', internalDeps: ['core']}, {name: 'editor', internalDeps: ['ui']}, {name: 'other', internalDeps: ['core']}]
     assert.deepEqual([...buildClosure(list, ['editor'])].sort(), ['core', 'editor', 'ui'])
     assert.deepEqual([...buildClosure(list, ['other', 'missing'])].sort(), ['core', 'other'])
+})
+
+test('runtimeDeps: a devDependency does not keep a package from being published', () => {
+    const root = repo({
+        'packages/a/package.json': {name: 'a', version: '1.0.0', devDependencies: {b: '*'}, peerDependencies: {c: '*'}},
+        'packages/b/package.json': {name: 'b', version: '1.0.0'},
+        'packages/c/package.json': {name: 'c', version: '1.0.0'},
+    })
+    const a = readPackages(root, 'packages/*').find(p => p.name === 'a')
+    assert.deepEqual([a.internalDeps.sort(), a.runtimeDeps], [['b', 'c'], ['c']])
+    assert.deepEqual(partialPlan([{name: 'b'}, {name: 'a', internalDeps: ['b'], runtimeDeps: []}], new Set(['a'])).publish.map(p => p.name), ['a'])
+    assert.equal(blockingDep({internalDeps: ['b']}, new Set(['b'])), 'b') // a release JSON without runtimeDeps
+})
+
+test('tarballPlan: from the tarballs in a directory; a missing directory is an error, not "nothing built"', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tarballs-'))
+    try {
+        fs.writeFileSync(path.join(dir, 'b-1.tgz'), '')
+        const list = [{name: 'a', tarball: 'a-1.tgz'}, {name: 'b', tarball: 'b-1.tgz', runtimeDeps: []}]
+        assert.deepEqual(tarballPlan(list, dir).publish.map(p => p.name), ['b'])
+        assert.throws(() => tarballPlan(list, path.join(dir, 'missing')), /the tarballs are not in/)
+    } finally {
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
 })

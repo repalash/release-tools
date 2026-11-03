@@ -2,9 +2,10 @@
 // release JSON) and the packages of the `packages` input they depend on, transitively (one that is not released is
 // built too: the released ones build against it). In build order (a package after the listed ones it depends on).
 //
-// Without --partial the first failure stops the run. With --partial a failed package is noted and the run goes on;
-// a package whose listed dependency failed or was skipped is skipped. The packages that did not build are written to
-// --failed-file as [{name, version, error}]; pack.mjs leaves them out of the release.
+// Without --partial the first failure stops the run. With --partial a failed package is noted and the run goes on
+// (a package that needs one that failed is still tried: its own build says whether it can do without). The packages
+// that did not build are written to --failed-file as [{name, version, error}]; pack.mjs leaves them out of the release,
+// with the packages that need them when published.
 //
 // Usage: node build-packages.mjs [--root <dir>] [--packages <input>] [--partial --failed-file <file>]
 // Env: PACKAGE_BUILD (the command, run with bash), RELEASE_FILE or RELEASE (the JSON from check.mjs), and PACKAGES,
@@ -13,7 +14,7 @@ import {parseArgs} from 'node:util'
 import path from 'node:path'
 import fs from 'node:fs'
 import {spawnSync} from 'node:child_process'
-import {blockingDep, buildClosure, parseRelease, readPackages, readRelease} from './lib.mjs'
+import {buildClosure, parseRelease, readPackages, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -31,22 +32,17 @@ const root = path.resolve(args.root)
 const list = readPackages(root, args.packages)
 const need = buildClosure(list, parseRelease(readRelease()).packages.map(p => p.name))
 const failed = []
-const out = new Set()
 for (const p of list.filter(x => need.has(x.name))) {
-    const dep = blockingDep(p, out)
-    if (dep) {
-        out.add(p.name)
-        failed.push({name: p.name, version: p.version, error: `depends on ${dep}, which did not build`})
-        console.log(`\n✗ ${p.name} (${p.dir}): skipped, it depends on ${dep}`)
-        continue
-    }
     console.log(`\n▶ ${p.name} (${p.dir}): ${command}`)
     const res = spawnSync('bash', ['-eo', 'pipefail', '-c', command], {cwd: path.join(root, p.dir), stdio: 'inherit'})
     if (res.status === 0) continue
-    if (!args.partial) process.exit(res.status ?? 1)
-    out.add(p.name)
-    failed.push({name: p.name, version: p.version, error: `package-build exited with ${res.status ?? res.signal}`})
-    console.log(`::warning::${p.name} did not build (exit ${res.status ?? res.signal}); a partial release leaves it out`)
+    const error = res.error ? `package-build could not run: ${res.error.message}` : `package-build exited with ${res.status ?? res.signal}`
+    if (!args.partial) {
+        console.error(`${p.name}: ${error}`)
+        process.exit(res.status || 1)
+    }
+    failed.push({name: p.name, version: p.version, error})
+    console.log(`::warning::${p.name}: ${error}; a partial release leaves it out`)
 }
 if (args.partial) {
     fs.mkdirSync(path.dirname(path.resolve(args['failed-file'])), {recursive: true})

@@ -20,7 +20,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {missingEntries, parseRelease, partialPlan, readRelease} from './lib.mjs'
+import {blockingDep, missingEntries, parseRelease, partialPlan, readRelease} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -107,6 +107,13 @@ for (const p of release.packages) {
     console.log(`\nPacking ${p.name}@${p.version} (${p.dir})`)
     if (reasons.has(p.name)) {
         console.log(`✗ left out: ${reasons.get(p.name)}`)
+        continue
+    }
+    // not packed when a package it needs is out already (its own pack could fail on that)
+    const dep = blockingDep(p, new Set(reasons.keys()))
+    if (dep) {
+        reasons.set(p.name, `depends on ${dep}, which is not published`)
+        console.log(`✗ left out: it depends on ${dep}`)
         continue
     }
     try {

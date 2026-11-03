@@ -130,9 +130,9 @@ jobs:
 | `environment` | (required) | The GitHub environment of the deploy. It must have a required reviewer, or the check stops. |
 | `deploy` | (required) | Command run in `working-directory` after the approval. |
 | `check` | | Command run in `working-directory` before the approval, with no secrets. |
-| `install` | | Command run in `working-directory` after the approval and before the secrets are set (`npm ci`), so dependency install scripts never get them. |
+| `install` | | Command run in `working-directory` after the approval and before the secrets are set (`npm ci`): dependency install scripts do not get them in their environment. |
 | `working-directory` | `.` | The deployed project; the commit list covers it. |
-| `secrets-env` | | Secrets the deploy command gets as environment variables, and the only ones it gets: a step of this repository puts them in the job's environment before your command runs. Put them on the environment, so only an approved run sees them. A missing one stops the deploy before it runs. |
+| `secrets-env` | | Secrets the deploy command gets as environment variables (a step of this repository puts them in the job's environment). Put them on the environment, so only an approved run sees them. A missing one stops the deploy before it runs. |
 | `name` | `<repository> (<environment>)` | What is deployed, in the notices. |
 | `node-version` | `24` | Node.js for the check and the deploy. |
 | `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
@@ -146,14 +146,14 @@ The caller job needs `deployments: read`. The Discord and Claude secrets are the
 |---|---|---|
 | `packages` | `.` | Package directory, or `<dir>/*` for every package below it. Several: separate with spaces. `!<dir>` leaves directories out, with `*` in a segment: `. plugins/* !plugins/template-*`. |
 | `build` | `npm ci` | Command run before packing. Empty: no build. |
-| `package-build` | | Command run in each package directory of `packages`, in build order, after `build` (`npm run build`). |
+| `package-build` | | Command run after `build` in the directory of each package the release needs (the released ones and the listed packages they build with), in build order (`npm run build`). |
 | `post-build` | | Command run at the root after the builds that must succeed, also with `partial`: a type check of the result. |
 | `node-version` | `24` | Node.js for the build. |
 | `clean-package` | `false` | Pack with the package's [clean-package](https://www.npmjs.com/package/clean-package). |
 | `require-changelog` | `false` | Fail when the version has no `CHANGELOG.md` section. |
 | `tag-format` | `publish@{version}` | `{name}-{version}` when there are several packages. |
 | `root-tag-format` | | The tag of the package at `.` when `packages` lists others too, like `v{version}`. Empty: `tag-format`. |
-| `partial` | `false` | Publish what built (needs `package-build`): a package whose `package-build` fails, or whose tarball lacks a file its manifest points at (`main`, `module`, `types`, `exports`, `bin`), is left out with each package that depends on it. The notice lists them, the others are published. The notice and the publish both take what is left out from the tarballs. |
+| `partial` | `false` | Publish what built (needs `package-build`): a package whose `package-build` fails, or whose tarball lacks a file its manifest points at (`main`, `module`, `types`, `bin`, and the `exports` targets of the conditions consumers resolve), is left out with each package that needs it when published (not through devDependencies). The notice lists them, the others are published. The notice and the publish both take what is left out from the tarballs. |
 | `github-release` | `false` | A GitHub release with the tarball instead of a plain tag. |
 | `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
 
@@ -188,7 +188,7 @@ The calling job must grant `contents: write` and `id-token: write`: a called wor
 - The check job runs your build with no secrets and a read-only token, and stops when `npm-publish` has no required reviewer.
 - The notify job holds the secrets and runs only the scripts of this repository, never your code. The publish job gets only `DISCORD_WEBHOOK_URL`, for the notice that it failed.
 - The publish job runs only the scripts of this repository and publishes the checked tarballs with `npm publish --ignore-scripts`.
-- Deploys: the check job runs your check with no secrets and a read-only token; the notify job runs only these scripts (it reads your history for the commit list); after the approval, `install` runs with no secrets, then a script of this repository puts the secrets in `secrets-env` in the job's environment and your deploy command runs with those; the notice of a failed deploy comes from a job of its own. The runner of the deploy job holds every secret the job has (code with root on it could read them), so keep the deploy's secrets on the environment and pass the notice secrets by name, as in the example, rather than `secrets: inherit`.
+- Deploys: the check job runs your check with no secrets and a read-only token; the notify job runs only these scripts (it reads your history for the commit list); after the approval, `install` runs with no secrets, then a script of this repository puts the secrets in `secrets-env` in the job's environment and your deploy command runs with those; the notice of a failed deploy comes from a job of its own. `secrets-env` decides what is in your command's environment; it is not a boundary against your own code: the runner of the deploy job holds every secret the job has, and your install and deploy commands run on it as the same user and can change what later steps run. So keep the deploy's secrets on the environment and pass the notice secrets by name, as in the example, rather than `secrets: inherit`.
 - Partial releases: the build runs your code, so a build could write anything; what the notice lists and what is published both come from the tarballs the check job uploaded, never from a list the build could rewrite.
 - Pin callers to a tag (`@v1`) or a commit SHA. The jobs check out these scripts at the commit of the called workflow (`job.workflow_repository`, `job.workflow_sha`), so the workflow and its scripts always match. These contexts are not available on GitHub Enterprise Server.
 

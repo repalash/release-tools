@@ -36,7 +36,7 @@ test('pack --partial: leaves out a failed build, a tarball without its entry fil
         const out = path.join(root, 'out'), failedFile = path.join(root, 'failed', 'failed.json')
         await run(process.execPath, [pack, '--root', root, '--out', out, '--partial', '--failed-file', failedFile, '--build-failed-file', path.join(root, 'build.json')],
             {env: env({RELEASE: JSON.stringify(release)})})
-        assert.deepEqual(fs.readdirSync(out), ['a-1.0.0.tgz']) // e was packed, then removed with d
+        assert.deepEqual(fs.readdirSync(out), ['a-1.0.0.tgz']) // c and e not even packed: what they need is out
         assert.deepEqual(JSON.parse(fs.readFileSync(failedFile, 'utf8')), [
             {name: 'b', version: '1.0.0', error: 'package-build exited with 1'},
             {name: 'c', version: '1.0.0', error: 'depends on b, which is not published'},
@@ -68,7 +68,7 @@ test('pack --partial fails when nothing is left', async () => {
     }
 })
 
-test('build-packages: what the release needs, in build order; --partial goes on and skips what depends on a failure', async () => {
+test('build-packages: what the release needs, in build order; --partial goes on after a failure', async () => {
     const root = repo({
         'packages/a/package.json': {name: 'a', version: '1.0.0', dependencies: {b: '*'}},
         'packages/b/package.json': {name: 'b', version: '1.0.0'},
@@ -81,11 +81,8 @@ test('build-packages: what the release needs, in build order; --partial goes on 
         const cmd = 'echo "$(basename "$PWD")" >> ../../order; test ! -e FAIL'
         const release = JSON.stringify({packages: [{name: 'a'}, {name: 'c'}]}) // b is not released, but a needs it
         await run(process.execPath, [build, '--root', root, '--packages', 'packages/*', '--partial', '--failed-file', failedFile], {env: env({PACKAGE_BUILD: cmd, RELEASE: release})})
-        assert.equal(fs.readFileSync(path.join(root, 'order'), 'utf8'), 'b\nc\n') // a after b, and skipped
-        assert.deepEqual(JSON.parse(fs.readFileSync(failedFile, 'utf8')), [
-            {name: 'b', version: '1.0.0', error: 'package-build exited with 1'},
-            {name: 'a', version: '1.0.0', error: 'depends on b, which did not build'},
-        ])
+        assert.equal(fs.readFileSync(path.join(root, 'order'), 'utf8'), 'b\na\nc\n') // a after b, tried anyway; d not needed
+        assert.deepEqual(JSON.parse(fs.readFileSync(failedFile, 'utf8')), [{name: 'b', version: '1.0.0', error: 'package-build exited with 1'}])
         // without --partial the first failure stops it
         await assert.rejects(run(process.execPath, [build, '--root', root, '--packages', 'packages/*'], {env: env({PACKAGE_BUILD: cmd, RELEASE: release})}), {code: 1})
     } finally {
