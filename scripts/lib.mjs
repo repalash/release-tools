@@ -529,7 +529,10 @@ export function failureText ({step, error = '', what = 'release', env = process.
 export function pickSecrets (secrets, names) {
     const list = String(names ?? '').split(/[\s,]+/).filter(Boolean)
     const missing = list.filter(n => !secrets[n])
-    if (missing.length) throw new Error(`missing secret(s): ${missing.join(', ')} (set them on the environment or the repository)`)
+    if (missing.length) {
+        throw new Error(`missing secret(s): ${missing.join(', ')}. Set them on the environment and pass each from the caller by name ` +
+            '(`NAME: ${{ secrets.NAME }}` under `secrets:`): a reusable workflow gets only the secrets its caller passes, environment secrets too')
+    }
     return Object.fromEntries(list.map(n => [n, secrets[n]]))
 }
 

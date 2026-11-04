@@ -346,7 +346,7 @@ test('deployDiscordText: waiting, check failed, deploy failed', () => {
 test('pickSecrets', () => {
     assert.deepEqual(pickSecrets({A: '1', B: '2', C: '3'}, 'A, C'), {A: '1', C: '3'})
     assert.deepEqual(pickSecrets({A: '1'}, ''), {})
-    assert.throws(() => pickSecrets({A: '1', B: ''}, 'A B D'), /missing secret\(s\): B, D/)
+    assert.throws(() => pickSecrets({A: '1', B: ''}, 'A B D'), /missing secret\(s\): B, D\. .*by name/)
 })
 
 test('failureText: what failed', () => {
