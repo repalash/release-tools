@@ -267,10 +267,14 @@ test('entryTargets and missingEntries', () => {
     assert.deepEqual(missingEntries({main: 'dist'}, ['package/dist/index.js']), []) // Node resolves main to dist/index.js
     assert.deepEqual(missingEntries({main: '.'}, ['package/index.js']), [])
     assert.deepEqual(missingEntries({main: './'}, []), []) // a directory target is left out
-    // a fallback array: any of its targets will do
-    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', './b.js']}}, ['package/b.js']), [])
-    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, ['package/c.mjs']), [])
-    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', {import: './c.mjs'}]}}, []), ['a.js'])
+    // exports targets are exact: no .js or /index.js lookup (Node applies it to main only)
+    assert.deepEqual(missingEntries({exports: './dist/index'}, ['package/dist/index.js']), ['dist/index'])
+    assert.deepEqual(missingEntries({module: 'dist/index'}, ['package/dist/index.js']), ['dist/index'])
+    // a fallback array: its first target counts; Node does not go on when that file is missing
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', './b.js']}}, ['package/b.js']), ['a.js'])
+    assert.deepEqual(missingEntries({exports: {'.': ['./a.js', './b.js']}}, ['package/a.js']), [])
+    assert.deepEqual(missingEntries({exports: {'.': [{import: './c.mjs'}, './a.js']}}, ['package/c.mjs']), [])
+    assert.deepEqual(missingEntries({exports: {'.': ['not-a-path', './a.js']}}, ['package/a.js']), [])
     // conditions consumers do not resolve may point outside `files`
     assert.deepEqual(missingEntries({exports: {'.': {source: './src/index.ts', development: './src/dev.js', import: './dist/index.mjs'}}}, ['package/dist/index.mjs']), [])
     assert.deepEqual(entryTargets({name: 'x'}), [])

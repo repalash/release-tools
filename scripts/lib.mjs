@@ -217,39 +217,43 @@ export function tarballName (name, version) {
 const RUNTIME_CONDITIONS = new Set(['import', 'require', 'default', 'node', 'browser', 'module', 'types', 'deno', 'worker', 'module-sync'])
 
 /**
- * The files a package's manifest points at (main, module, browser, types, typings, bin, and the exports targets of the
- * conditions consumers resolve), as groups of paths relative to the package: a group is there when one of its paths is.
- * An exports fallback array is one group (any of its targets will do, also those in its condition objects), and a target
- * also counts with `.js` or `/index.js` after it, as Node resolves `main` (`.` is `index.js`). Targets with `*` and
- * directory targets (ending in `/`) are left out.
+ * The files a package's manifest points at, as Node resolves them: `main` and `browser` with the legacy lookup (the path,
+ * or with `.js`, or `/index.js`; `.` is `index.js`), as alternatives of one group; `module`, `types`, `typings`, `bin`
+ * and the `exports` targets of the conditions consumers resolve exactly. In an exports fallback array the first target
+ * that is a path counts (Node does not go on to the next one when that file is missing). Targets with `*` and
+ * directory targets (ending in `/`) are left out. A group is there when one of its paths is.
  * @param {object} manifest
  * @returns {string[][]} sorted by their first path
  */
 export function entryTargets (manifest) {
     const groups = new Map()
-    const candidates = v => {
-        const n = path.posix.normalize(v).replace(/^\.\//, '')
+    const exact = v => [path.posix.normalize(v).replace(/^\.\//, '')]
+    const legacy = v => {
+        const n = exact(v)[0]
         return n === '.' || n === '' ? ['index.js'] : [n, `${n}.js`, `${n}/index.js`]
     }
     const usable = v => typeof v === 'string' && !v.includes('*') && !v.endsWith('/')
-    const group = paths => { if (paths.length) groups.set(paths.join('|'), paths) }
-    /** The targets of an exports value: its strings, and those of its runtime conditions and fallbacks, flat. */
-    const flat = v => Array.isArray(v) ? v.flatMap(flat)
-        : usable(v) ? [v]
-            : v && typeof v === 'object' ? Object.entries(v).filter(([k]) => k.startsWith('.') || RUNTIME_CONDITIONS.has(k)).flatMap(([, x]) => flat(x)) : []
-    /** Each exports target is its own group, but a fallback array is one. */
+    const group = paths => groups.set(paths.join('|'), paths)
+    const condition = k => k.startsWith('.') || RUNTIME_CONDITIONS.has(k)
     const add = v => {
-        if (Array.isArray(v)) group(flat(v).flatMap(candidates))
-        else if (usable(v)) group(candidates(v))
-        else if (v && typeof v === 'object') {
-            for (const [k, x] of Object.entries(v)) if (k.startsWith('.') || RUNTIME_CONDITIONS.has(k)) add(x)
+        if (Array.isArray(v)) {
+            // the first target Node can use: a path, or a condition object (resolved as one)
+            const first = v.find(x => typeof x === 'string' ? x.startsWith('./') : x && typeof x === 'object')
+            if (first !== undefined) add(first)
+        } else if (usable(v)) {
+            group(exact(v))
+        } else if (v && typeof v === 'object') {
+            for (const [k, x] of Object.entries(v)) if (condition(k)) add(x)
         }
     }
-    for (const k of ['main', 'module', 'browser', 'types', 'typings']) if (usable(manifest[k])) group(candidates(manifest[k]))
-    if (usable(manifest.bin)) group(candidates(manifest.bin))
-    else if (manifest.bin && typeof manifest.bin === 'object') for (const x of Object.values(manifest.bin)) if (usable(x)) group(candidates(x))
+    for (const k of ['main', 'browser']) if (usable(manifest[k])) group(legacy(manifest[k]))
+    for (const k of ['module', 'types', 'typings']) if (usable(manifest[k])) group(exact(manifest[k]))
+    if (usable(manifest.bin)) group(exact(manifest.bin))
+    else if (manifest.bin && typeof manifest.bin === 'object') for (const x of Object.values(manifest.bin)) if (usable(x)) group(exact(x))
     add(manifest.exports)
-    return [...groups.values()].sort((a, b) => a[0].localeCompare(b[0]))
+    // a legacy group whose path is also required exactly says nothing more
+    const all = [...groups.values()]
+    return all.filter(g => g.length === 1 || !groups.has(g[0])).sort((a, b) => a[0].localeCompare(b[0]))
 }
 
 /** The entry targets (entryTargets) not in a tarball, given its file list (`package/…` paths), by their first path. */
