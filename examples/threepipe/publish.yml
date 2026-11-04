@@ -1,0 +1,37 @@
+# .github/workflows/publish.yml of threepipe: the core package at the root and its plugins in plugins/*, npm workspaces.
+# Each public package whose version is not on npm is published, dependencies first, after approval. Each package
+# builds with its docs; partial: one that fails is left out with what depends on it, the others are published.
+# post-build must pass: the declarations checked as a consumer (core and plugin-tweakpane, so a tweakpane failure stops
+# the release); the examples' type check is a warning only. Tags: v<version> for the core, <name>-<version> for a plugin.
+name: Publish packages to npm
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  release:
+    permissions:
+      contents: write # tags
+      id-token: write # npm trusted publishing
+    uses: repalash/release-tools/.github/workflows/npm-release.yml@v1
+    with:
+      packages: . plugins/* !plugins/plugin-template-*
+      build: npm ci
+      package-build: npm run build && npm run docs --if-present
+      post-build: npm run test:types && (npm run build-examples || echo "::warning::the examples do not type-check")
+      partial: true
+      clean-package: true
+      require-changelog: true
+      tag-format: '{name}-{version}'
+      root-tag-format: 'v{version}'
+      node-version: '22'
+    secrets: inherit

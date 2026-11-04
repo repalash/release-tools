@@ -143,3 +143,51 @@ test('reads the release from RELEASE_FILE (the artifact), also when the job outp
         fs.rmSync(dir, {recursive: true, force: true})
     }
 })
+
+test('a partial release: the notice leaves out what has no tarball (as publish does), with pack\'s reason', async () => {
+    const s = await server()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'))
+    try {
+        const packages = [{...release.packages[0], tarball: 'pkg-1.0.1.tgz'}, {name: 'ext', version: '2.0.0', dir: 'ext', tag: 'ext-2.0.0', distTag: '',
+            previousTag: '', commits: [], tarball: 'ext-2.0.0.tgz', internalDeps: ['pkg']}, {name: 'solo', version: '3.0.0', dir: 'solo', tag: 'solo-3.0.0',
+            distTag: '', previousTag: '', commits: [], tarball: 'solo-3.0.0.tgz', internalDeps: []}]
+        fs.writeFileSync(path.join(dir, 'ext-2.0.0.tgz'), '') // packed, but its dependency is not
+        fs.writeFileSync(path.join(dir, 'solo-3.0.0.tgz'), '')
+        const failedFile = path.join(dir, 'failed.json')
+        fs.writeFileSync(failedFile, JSON.stringify([{name: 'pkg', version: '1.0.1', error: 'package-build exited with 2'}, {name: 'solo', version: '3.0.0', error: 'a false claim'}]))
+        await run(process.execPath, [script], {env: env(s.base, {RELEASE: JSON.stringify({...release, packages}), PARTIAL: 'true', TARBALLS_DIR: dir, FAILED_FILE: failedFile})})
+        const [fire, discord] = s.requests
+        assert.match(discord.body.content, /^📦 owner\/repo: \*\*solo@3\.0\.0\*\* is built and waits for approval/)
+        assert.match(discord.body.content, /⚠️ Not built, not published:\n- pkg@1\.0\.1: package-build exited with 2\n- ext@2\.0\.0: depends on pkg, which is not published/)
+        assert.match(fire.body.text, /packages \(1, in publish order\):\n- solo@3\.0\.0\n/)
+    } finally {
+        s.close()
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('a partial release where nothing was built: the failure notice lists why', async () => {
+    const s = await server()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-'))
+    try {
+        const failedFile = path.join(dir, 'failed.json')
+        fs.writeFileSync(failedFile, JSON.stringify([{name: 'pkg', version: '1.0.1', error: 'package-build exited with 2'}]))
+        await run(process.execPath, [script], {env: env(s.base, {BUILD_OK: 'false', PARTIAL: 'true', FAILED_FILE: failedFile})})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.match(s.requests[0].body.content, /failed; nothing is published\.\nLog: .*\nNot built:\n- pkg@1\.0\.1: package-build exited with 2/)
+    } finally {
+        s.close()
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('a partial release whose tarballs could not be downloaded: "the notice failed", not a wrong list', async () => {
+    const s = await server()
+    try {
+        await assert.rejects(run(process.execPath, [script], {env: env(s.base, {...gh, PARTIAL: 'true', TARBALLS_DIR: '/nonexistent/tarballs'})}), {code: 1})
+        assert.deepEqual(s.requests.map(r => r.url), ['/discord'])
+        assert.match(s.requests[0].body.content, /the release notice failed: the tarballs are not in \/nonexistent\/tarballs/)
+    } finally {
+        s.close()
+    }
+})

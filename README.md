@@ -7,8 +7,9 @@ Bump the version and push. You get a Discord message, you approve, and the packa
 - **Version-driven**: a package is released when its `version` is not on npm yet. Any other push stops after the check.
 - **Approval first**: publishing waits for you on the `npm-publish` environment, and publishes the tarballs that were built and checked before.
 - **No npm tokens**: npm trusted publishing (OIDC), with a provenance statement for each version.
-- **One package or a monorepo**: a root package, a subfolder, or all npm workspaces in dependency order.
+- **One package or a monorepo**: a root package, a subfolder, or all npm workspaces in dependency order; with `partial`, a monorepo publishes the packages that built when another one's build fails.
 - **Release notes**: the `CHANGELOG.md` section of the version becomes the GitHub release.
+- **Deploys too**: [`deploy.yml`](#deploys) runs the same check, notice, review and approval before a deploy command.
 
 ## The flow
 
@@ -86,18 +87,73 @@ The list shows the commits since the previous release of the package. The Claude
 
 3. Release: bump `version` in `package.json`, push, and open the link in Discord.
 
-More callers (a package in a subfolder, workspaces, GitHub releases): [`examples/`](examples).
+More callers (a package in a subfolder, workspaces, GitHub releases, a monorepo with partial releases and a deploy): [`examples/`](examples).
+
+## Deploys
+
+`deploy.yml` runs a deploy command after the same approval: a check with no secrets, the Discord notice with the
+approval link, the Claude review and the commits since the last successful deployment, then the deploy in a GitHub
+environment that requires you as reviewer.
+
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [production]
+    paths: ['services/api/**']
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false # never cancel a deploy half-way
+jobs:
+  deploy:
+    permissions:
+      contents: read
+      deployments: read # required: the commits since the last deployment
+    uses: repalash/release-tools/.github/workflows/deploy.yml@v1
+    with:
+      environment: production
+      working-directory: services/api
+      check: npm ci && npm test
+      install: npm ci
+      deploy: npm run deploy
+      secrets-env: CLOUDFLARE_API_TOKEN # a secret of the production environment
+    secrets: # by name, not `inherit`: the deploy job then holds no other repository secret
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      CLAUDE_REVIEW_FIRE_URL: ${{ secrets.CLAUDE_REVIEW_FIRE_URL }}
+      CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
+```
+
+| Input | Default | |
+|---|---|---|
+| `environment` | (required) | The GitHub environment of the deploy. It must have a required reviewer, or the check stops. |
+| `deploy` | (required) | Command run in `working-directory` after the approval. |
+| `check` | | Command run in `working-directory` before the approval, with no secrets. |
+| `install` | | Command run in `working-directory` after the approval and before the secrets are set (`npm ci`): dependency install scripts do not get them in their environment. |
+| `working-directory` | `.` | The deployed project; the commit list covers it. |
+| `secrets-env` | | Secrets the deploy command gets as environment variables (a step of this repository puts them in the job's environment). Put them on the environment, so only an approved run sees them. A missing one stops the deploy before it runs. |
+| `name` | `<repository> (<environment>)` | What is deployed, in the notices. |
+| `node-version` | `24` | Node.js for the check and the deploy. |
+| `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
+
+The caller job needs `deployments: read`. The Discord and Claude secrets are the same as for releases. The review routine gets a request that starts with
+`deploy review` (the release requests start with `npm release review`), so its instructions should cover both.
 
 ## Configuration
 
 | Input | Default | |
 |---|---|---|
-| `packages` | `.` | Package directory, or `<dir>/*` for every package below it. Several: separate with spaces. |
+| `packages` | `.` | Package directory, or `<dir>/*` for every package below it. Several: separate with spaces. `!<dir>` leaves directories out, with `*` in a segment: `. plugins/* !plugins/template-*`. |
 | `build` | `npm ci` | Command run before packing. Empty: no build. |
+| `package-build` | | Command run after `build` in the directory of each package the release needs (the released ones and the listed packages they build with), in build order (`npm run build`). |
+| `post-build` | | Command run at the root after the builds that must succeed, also with `partial`: a type check of the result. |
 | `node-version` | `24` | Node.js for the build. |
 | `clean-package` | `false` | Pack with the package's [clean-package](https://www.npmjs.com/package/clean-package). |
 | `require-changelog` | `false` | Fail when the version has no `CHANGELOG.md` section. |
 | `tag-format` | `publish@{version}` | `{name}-{version}` when there are several packages. |
+| `root-tag-format` | | The tag of the package at `.` when `packages` lists others too, like `v{version}`. Empty: `tag-format`. |
+| `partial` | `false` | Publish what built (needs `package-build`): a package whose `package-build` fails, or whose tarball lacks a file its manifest points at (`main`, `module`, `types`, `bin`, and the `exports` targets of the conditions consumers resolve), is left out with each package that needs it when published (not through devDependencies). The notice lists them, the others are published. The notice and the publish both take what is left out from the tarballs. |
 | `github-release` | `false` | A GitHub release with the tarball instead of a plain tag. |
 | `review-actor` | `repalash` | Only pushes by this user start the Claude review. |
 
@@ -132,6 +188,8 @@ The calling job must grant `contents: write` and `id-token: write`: a called wor
 - The check job runs your build with no secrets and a read-only token, and stops when `npm-publish` has no required reviewer.
 - The notify job holds the secrets and runs only the scripts of this repository, never your code. The publish job gets only `DISCORD_WEBHOOK_URL`, for the notice that it failed.
 - The publish job runs only the scripts of this repository and publishes the checked tarballs with `npm publish --ignore-scripts`.
+- Deploys: the check job runs your check with no secrets and a read-only token; the notify job runs only these scripts (it reads your history for the commit list); after the approval, `install` runs with no secrets, then a script of this repository puts the secrets in `secrets-env` in the job's environment and your deploy command runs with those; the notice of a failed deploy comes from a job of its own. `secrets-env` decides what is in your command's environment; it is not a boundary against your own code: the runner of the deploy job holds every secret the job has, and your install and deploy commands run on it as the same user and can change what later steps run. So keep the deploy's secrets on the environment and pass the notice secrets by name, as in the example, rather than `secrets: inherit`.
+- Partial releases: the build runs your code, so a build could write anything; what the notice lists and what is published both come from the tarballs the check job uploaded, never from a list the build could rewrite.
 - Pin callers to a tag (`@v1`) or a commit SHA. The jobs check out these scripts at the commit of the called workflow (`job.workflow_repository`, `job.workflow_sha`), so the workflow and its scripts always match. These contexts are not available on GitHub Enterprise Server.
 
 ### Development
@@ -144,7 +202,7 @@ The calling job must grant `contents: write` and `id-token: write`: a called wor
 
 [`dts-js-extensions`](packages/dts-js-extensions): rewrites relative imports in emitted `.d.ts` files to explicit `.js` paths, for `moduleResolution: node16 | nodenext`.
 
-Used by [ts-browser-helpers](https://github.com/repalash/ts-browser-helpers), [uiconfig.js](https://github.com/repalash/uiconfig.js), [three-ts-types](https://github.com/repalash/three-ts-types), [three.js-modded](https://github.com/repalash/three.js-modded) and [tweakpane-image-plugin](https://github.com/repalash/tweakpane-image-plugin).
+Used by [threepipe](https://github.com/repalash/threepipe) (releases and the cloud deploy), [ts-browser-helpers](https://github.com/repalash/ts-browser-helpers), [uiconfig.js](https://github.com/repalash/uiconfig.js), [three-ts-types](https://github.com/repalash/three-ts-types), [three.js-modded](https://github.com/repalash/three.js-modded) and [tweakpane-image-plugin](https://github.com/repalash/tweakpane-image-plugin).
 
 ## License
 
