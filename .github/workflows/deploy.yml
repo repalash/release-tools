@@ -11,7 +11,7 @@ name: deploy
 #            the scripts of this repository; it has the secrets and never runs the caller's code.
 #   deploy   environment `environment` (the approval): the `install` command (the secrets are not in its environment),
 #            then a step of this repository puts the secrets named in `secrets-env` in the job's environment, then the
-#            `deploy` command runs with those. The job's runner holds every secret the job has, and the caller's code
+#            `deploy` command runs with those. The caller passes them by name (the ones declared under `secrets`). The job's runner holds every secret the job has, and the caller's code
 #            runs on it: pass this workflow only the secrets it needs (README, Security).
 #   failed   when the deploy started and failed (not when the approval was rejected): the Discord notice, from a job
 #            of its own (the deploy job ran caller code).
@@ -67,6 +67,18 @@ on:
         required: false
       CLAUDE_REVIEW_TOKEN:
         description: 'Bearer token of the Claude Code review routine (optional).'
+        required: false
+      # The deploy's own secrets. GitHub gives a reusable workflow only the secrets its caller passes, environment
+      # secrets too, and the caller can pass by name only the ones declared here: list a name in `secrets-env` and
+      # pass it from the caller (`NAME: ${{ secrets.NAME }}`, which resolves to the environment's secret).
+      CLOUDFLARE_API_TOKEN:
+        description: 'Cloudflare API token for the deploy command (wrangler), from the environment (optional).'
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        description: 'Cloudflare account id for the deploy command, when the wrangler config has none (optional).'
+        required: false
+      ADMIN_SERVICE_TOKEN:
+        description: 'teenybase admin token: later deploys apply migrations through the deployed Worker with it (optional).'
         required: false
 
 jobs:
