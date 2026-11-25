@@ -483,12 +483,18 @@ export function tagAction ({existing, sha, publishedBefore, publishedCommit = ''
 
 /** The characters of CHANGELOG text in a review request, shared by its packages (the request stays well under 64 KiB) */
 export const REVIEW_CHANGELOG_BUDGET = 30000
-/** The largest review request, in characters: the routine fire endpoint takes a bounded text (64 KiB) */
+/** The largest review request: the UTF-8 bytes of its JSON payload (the routine fire endpoint takes at most 64 KiB) */
 export const REVIEW_TEXT_LIMIT = 60000
 
+/** The UTF-8 bytes of the payload that fireReview sends for a text */
+export function reviewPayloadBytes (text) {
+    return Buffer.byteLength(JSON.stringify(firePayload(text)), 'utf8')
+}
+
 /**
- * The text of the review request sent to the Claude Code routine. The CHANGELOG sections share a budget; a release
- * too large for the request still gets one: without the sections and with fewer commits, then cut, each with a note.
+ * The text of the review request sent to the Claude Code routine. The CHANGELOG sections share a budget (characters);
+ * a request whose payload is over REVIEW_TEXT_LIMIT bytes still goes: without the sections and with fewer commits,
+ * then cut at a line, each with a note.
  * @param {{repository: string, sha: string, runUrl: string, packages: object[]}} release
  */
 export function reviewText ({repository, sha, runUrl, packages}, failed = []) {
@@ -518,11 +524,15 @@ export function reviewText ({repository, sha, runUrl, packages}, failed = []) {
     }
     const each = Math.max(200, Math.min(6000, Math.floor(REVIEW_CHANGELOG_BUDGET / Math.max(1, listed.length))))
     const full = build(each, Infinity)
-    if (full.length <= REVIEW_TEXT_LIMIT) return full
+    if (reviewPayloadBytes(full) <= REVIEW_TEXT_LIMIT) return full
     const short = build(0, 5)
-    if (short.length <= REVIEW_TEXT_LIMIT) return short
-    const note = '\n… the request was cut for its size; the release plan is in the run (artifact npm-release-plan)\n'
-    return short.slice(0, short.lastIndexOf('\n', REVIEW_TEXT_LIMIT - note.length)) + note
+    if (reviewPayloadBytes(short) <= REVIEW_TEXT_LIMIT) return short
+    // whole lines from the end, until the payload fits with the note
+    const note = '… the request was cut for its size; the release plan is in the run (artifact npm-release-plan)'
+    const lines = short.trimEnd().split('\n')
+    let size = reviewPayloadBytes([...lines, note].join('\n') + '\n')
+    while (lines.length > 1 && size > REVIEW_TEXT_LIMIT) size -= reviewPayloadBytes(lines.pop() + '\n') - reviewPayloadBytes('')
+    return [...lines, note].join('\n') + '\n'
 }
 
 /**

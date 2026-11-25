@@ -172,7 +172,7 @@ To rotate one secret in several repositories: `scripts/setup-repos.sh --set-secr
 
 - With a `/*` entry or several entries in `packages`, the tag format must contain `{name}`. The previous release is the latest tag in that format reachable from the commit. For a format without `{name}`, `v1.2.3` tags also count.
 - A CHANGELOG section starts at a heading (`#` to `###`) whose first word is the version: `## [1.2.3] - 2026-01-01`, `## v1.2.3`, `# [1.2.3](link) (date)`. An empty section counts as missing.
-- The run summary lists the packages to publish, then the CHANGELOG section (cut at 20,000 characters) and the commits of each. The review request carries the sections too, within a budget shared by the packages, and stays under 60,000 characters.
+- The run summary lists the packages to publish, then the CHANGELOG section (cut at 20,000 characters) and the commits of each. The review request carries the sections too, within a budget shared by the packages, and its payload stays under 60,000 bytes.
 - A prerelease (`1.0.0-beta.1`) gets the dist-tag `next`, unless `publishConfig.tag` sets another one, and a prerelease GitHub release.
 - In workspaces, private packages are skipped, and `build` must build every package that the released ones need.
 - Output: `release`, the JSON of the release (`packages` is empty when nothing was pending). GitHub empties a job output that contains a string it masks, which a changelog can mention, so the jobs of the workflow pass the JSON as the artifact `npm-release-plan` instead, and `release` can be empty.

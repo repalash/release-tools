@@ -6,7 +6,7 @@ import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, blockingDep, buildClosure, deployDiscordText, deployReviewText, discordText, distTag, entryTargets, firePayload,
     formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
-    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, summaryMarkdown, tagAction, clipMarkdown, demoteHeadings, provenanceCommit, REVIEW_TEXT_LIMIT, tagFormatFor, tagMatchPatterns,
+    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, summaryMarkdown, tagAction, clipMarkdown, demoteHeadings, provenanceCommit, REVIEW_TEXT_LIMIT, reviewPayloadBytes, tagFormatFor, tagMatchPatterns,
     tarballName, tarballPlan, validateTagFormat,
 } from '../lib.mjs'
 
@@ -462,6 +462,21 @@ test('reviewText: a release of many packages still fits in the request', () => {
     const many = reviewText({...release, packages: pkgs(400)})
     assert.ok(many.length <= REVIEW_TEXT_LIMIT, `${many.length}`)
     assert.ok(many.endsWith('the release plan is in the run (artifact npm-release-plan)\n'))
+    for (const t of [ten, sixty, many]) assert.ok(reviewPayloadBytes(t) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(t)} bytes`)
+})
+
+test('reviewText: the limit is in UTF-8 bytes of the payload, not characters', () => {
+    // CJK takes 3 bytes in UTF-8: 5 sections of 6,000 characters fit by characters, but not by bytes
+    const cjk = Array.from({length: 600}, () => '修复了刷新队列的问题').join('\n')
+    const five = Array.from({length: 5}, (_, i) => ({...pkgA, name: `p${i}`, dir: `packages/p${i}`, changelog: cjk}))
+    const text = reviewText({...release, packages: five})
+    assert.ok(reviewPayloadBytes(text) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(text)} bytes`)
+    assert.ok(text.includes('left out of this request for its size'))
+    // and the line cut keeps whole characters and stays under the limit
+    const many = Array.from({length: 300}, (_, i) => ({...pkgA, name: `包${i}`, dir: `packages/包${i}`, commits: Array.from({length: 5}, (_, j) => `abc${j} 修复了刷新队列的问题，以及一些其他的改动 ${j}`)}))
+    const cut = reviewText({...release, packages: many})
+    assert.ok(reviewPayloadBytes(cut) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(cut)} bytes`)
+    assert.ok(cut.endsWith('(artifact npm-release-plan)\n'))
 })
 
 test('tagAction: where the tag goes, and whether it is made', () => {
