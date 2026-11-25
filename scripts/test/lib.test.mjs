@@ -6,7 +6,7 @@ import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, blockingDep, buildClosure, deployDiscordText, deployReviewText, discordText, distTag, entryTargets, firePayload,
     formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
-    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
+    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, summaryMarkdown, tagAction, clipMarkdown, demoteHeadings, provenanceCommit, REVIEW_TEXT_LIMIT, reviewPayloadBytes, tagFormatFor, tagMatchPatterns,
     tarballName, tarballPlan, validateTagFormat,
 } from '../lib.mjs'
 
@@ -162,11 +162,13 @@ test('reviewText lists every package with its commits', () => {
         '  commits since the previous release:',
         '    aaa1111 core: add x',
         '    bbb2222 core: fix y',
+        '  CHANGELOG section: none',
         '- ui@2.0.0-beta.1 (dist-tag next)',
         '  directory: packages/ui',
         '  release tag: ui-2.0.0-beta.1',
         '  previous release tag: none',
         '  commits since the previous release: none',
+        '  CHANGELOG section: none',
         '',
     ].join('\n'))
     assert.deepEqual(firePayload('hi'), {text: 'hi'})
@@ -389,5 +391,129 @@ test('tarballPlan: from the tarballs in a directory; a missing directory is an e
         assert.throws(() => tarballPlan(list, path.join(dir, 'missing')), /the tarballs are not in/)
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
+    }
+})
+
+test('reviewText includes the CHANGELOG section of each package', () => {
+    const text = reviewText({...release, packages: [{...pkgA, changelog: '- Fix: y\n- Add x'}]})
+    assert.ok(text.includes('  CHANGELOG section:\n    - Fix: y\n    - Add x\n'), text)
+})
+
+test('summaryMarkdown: the table, then each CHANGELOG section (its headings under the package) and the commits', () => {
+    const md = summaryMarkdown([{...pkgA, changelog: '### Added\n- x\n### Fixed\n- y\n'}, pkgB])
+    assert.equal(md, [
+        '## Packages to publish',
+        '',
+        '| package | version | dist-tag | tag | previous | commits |',
+        '|---|---|---|---|---|---|',
+        '| core | 1.2.0 | latest | `core-1.2.0` | `core-1.1.0` | 2 |',
+        '| ui | 2.0.0-beta.1 | next | `ui-2.0.0-beta.1` | none | 0 |',
+        '',
+        '### core@1.2.0',
+        '',
+        '#### Added',
+        '- x',
+        '#### Fixed',
+        '- y',
+        '',
+        '<details><summary>2 commit(s) since core-1.1.0</summary>',
+        '',
+        '- `aaa1111` core: add x',
+        '- `bbb2222` core: fix y',
+        '',
+        '</details>',
+        '',
+        '### ui@2.0.0-beta.1 (dist-tag next)',
+        '',
+        '_No CHANGELOG section for 2.0.0-beta.1._',
+        '',
+    ].join('\n'))
+})
+
+test('demoteHeadings: the highest heading goes to the level, the others keep their distance; fences are left', () => {
+    assert.equal(demoteHeadings('### A\n#### B\n```\n# not a heading\n```\n- x', 4), '#### A\n##### B\n```\n# not a heading\n```\n- x')
+    assert.equal(demoteHeadings('##### deep\n- x', 4), '##### deep\n- x')
+    assert.equal(demoteHeadings('- no headings', 4), '- no headings')
+    assert.equal(demoteHeadings('### A\n###### F', 4), '#### A\n###### F')
+})
+
+test('clipMarkdown: cuts at a line end, closes an open fence and notes where the rest is', () => {
+    assert.equal(clipMarkdown('  short  ', 100), 'short')
+    assert.equal(clipMarkdown('line one\nline two\nline three', 20, 'pkg/CHANGELOG.md'),
+        'line one\nline two\n\n_… cut at 20 characters; the full section is in pkg/CHANGELOG.md._')
+    const cut = clipMarkdown('text\n```js\nconst a = 1\nconst b = 2\n```\nafter', 30)
+    assert.equal(cut, 'text\n```js\nconst a = 1\n```\n\n_… cut at 30 characters._')
+})
+
+test('reviewText: a release of many packages still fits in the request', () => {
+    const long = Array.from({length: 2000}, (_, i) => `- change ${i}`).join('\n')
+    const commits = Array.from({length: 20}, (_, i) => `abc${i}def a commit subject of a usual length, number ${i}`)
+    const pkgs = n => Array.from({length: n}, (_, i) => ({...pkgA, name: `p${i}`, dir: `packages/p${i}`, changelog: long, commits}))
+    // 10 packages: every section, each cut to its share of the budget
+    const ten = reviewText({...release, packages: pkgs(10)})
+    assert.ok(ten.length <= REVIEW_TEXT_LIMIT, `${ten.length}`)
+    assert.ok(ten.includes('the full section is in packages/p9/CHANGELOG.md'))
+    // 60 packages: the sections are left out and the commits shortened
+    const sixty = reviewText({...release, packages: pkgs(60)})
+    assert.ok(sixty.length <= REVIEW_TEXT_LIMIT, `${sixty.length}`)
+    assert.ok(sixty.includes('CHANGELOG section: in packages/p59/CHANGELOG.md (left out of this request for its size)'))
+    assert.ok(sixty.includes('    … 15 more'))
+    // 400 packages: cut, with a note
+    const many = reviewText({...release, packages: pkgs(400)})
+    assert.ok(many.length <= REVIEW_TEXT_LIMIT, `${many.length}`)
+    assert.ok(many.endsWith('the release plan is in the run (artifact npm-release-plan)\n'))
+    for (const t of [ten, sixty, many]) assert.ok(reviewPayloadBytes(t) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(t)} bytes`)
+})
+
+test('reviewText: the limit is in UTF-8 bytes of the payload, not characters', () => {
+    // CJK takes 3 bytes in UTF-8: 5 sections of 6,000 characters fit by characters, but not by bytes
+    const cjk = Array.from({length: 600}, () => '修复了刷新队列的问题').join('\n')
+    const five = Array.from({length: 5}, (_, i) => ({...pkgA, name: `p${i}`, dir: `packages/p${i}`, changelog: cjk}))
+    const text = reviewText({...release, packages: five})
+    assert.ok(reviewPayloadBytes(text) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(text)} bytes`)
+    assert.ok(text.includes('left out of this request for its size'))
+    // and the line cut keeps whole characters and stays under the limit
+    const many = Array.from({length: 300}, (_, i) => ({...pkgA, name: `包${i}`, dir: `packages/包${i}`, commits: Array.from({length: 5}, (_, j) => `abc${j} 修复了刷新队列的问题，以及一些其他的改动 ${j}`)}))
+    const cut = reviewText({...release, packages: many})
+    assert.ok(reviewPayloadBytes(cut) <= REVIEW_TEXT_LIMIT, `${reviewPayloadBytes(cut)} bytes`)
+    assert.ok(cut.endsWith('(artifact npm-release-plan)\n'))
+})
+
+test('tagAction: where the tag goes, and whether it is made', () => {
+    assert.deepEqual(tagAction({existing: '', sha: 'a', publishedBefore: false, tag: 't'}), {action: 'create', target: 'a'})
+    assert.deepEqual(tagAction({existing: 'a', sha: 'a', publishedBefore: false, tag: 't'}), {action: 'skip', target: 'a'})
+    assert.throws(() => tagAction({existing: 'b', sha: 'a', publishedBefore: false, tag: 't'}), /the tag t is on b, not on a/)
+    // two runs listed the version; the earlier one, on commit b, published and tagged it
+    assert.deepEqual(tagAction({existing: 'b', sha: 'a', publishedBefore: true, publishedCommit: 'b', tag: 't'}), {action: 'skip', target: 'b'})
+    // ...but its tag step failed: the tag goes on b, not on this run's commit
+    assert.deepEqual(tagAction({existing: '', sha: 'a', publishedBefore: true, publishedCommit: 'b', tag: 't'}), {action: 'create', target: 'b'})
+    // a tag on a commit that did not publish it stays an error
+    assert.throws(() => tagAction({existing: 'c', sha: 'a', publishedBefore: true, publishedCommit: 'b', tag: 't'}), /the tag t is on c, not on b, the commit that published it/)
+    // no provenance: the existing tag is kept, unverified
+    assert.deepEqual(tagAction({existing: 'b', sha: 'a', publishedBefore: true, tag: 't'}), {action: 'skip', target: 'b', unverified: true})
+    // a re-run of the run that published it
+    assert.deepEqual(tagAction({existing: '', sha: 'a', publishedBefore: true, publishedCommit: 'a', tag: 't'}), {action: 'create', target: 'a'})
+})
+
+test('provenanceCommit reads the source commit of the provenance statement', async () => {
+    const statement = {predicate: {buildDefinition: {resolvedDependencies: [{uri: 'git+https://github.com/o/r@refs/heads/main', digest: {gitCommit: 'abc123'}}]}}}
+    const attestations = {attestations: [
+        {predicateType: 'https://github.com/npm/attestation/tree/main/specs/publish/v0.1', bundle: {dsseEnvelope: {payload: Buffer.from('{}').toString('base64')}}},
+        {predicateType: 'https://slsa.dev/provenance/v1', bundle: {dsseEnvelope: {payload: Buffer.from(JSON.stringify(statement)).toString('base64')}}},
+    ]}
+    const realFetch = globalThis.fetch
+    const urls = []
+    try {
+        globalThis.fetch = async url => {
+            urls.push(url)
+            return url.includes('missing') ? {ok: false, json: async () => ({})} : {ok: true, json: async () => attestations}
+        }
+        assert.equal(await provenanceCommit('@scope/pkg', '1.0.0'), 'abc123')
+        assert.equal(urls[0], 'https://registry.npmjs.org/-/npm/v1/attestations/@scope%2fpkg@1.0.0')
+        assert.equal(await provenanceCommit('missing', '1.0.0'), '')
+        globalThis.fetch = async () => { throw new Error('offline') }
+        assert.equal(await provenanceCommit('pkg', '1.0.0'), '')
+    } finally {
+        globalThis.fetch = realFetch
     }
 })

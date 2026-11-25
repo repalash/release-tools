@@ -369,25 +369,170 @@ function label (p) {
 }
 
 /**
- * The text of the review request sent to the Claude Code routine.
+ * Cuts a markdown text to at most `max` characters, at the end of a line, closes a code fence that the cut leaves open
+ * and says that it was cut and where the rest is. A text that fits is returned as it is (trimmed).
+ * @param {string} text
+ * @param {number} max
+ * @param {string} [rest] - where the full text is, for the note (a file)
+ */
+export function clipMarkdown (text, max, rest = '') {
+    text = String(text).trim()
+    if (text.length <= max) return text
+    let cut = text.slice(0, max)
+    const nl = cut.lastIndexOf('\n')
+    if (nl > 0) cut = cut.slice(0, nl)
+    let fence = ''
+    for (const line of cut.split('\n')) {
+        const f = line.match(/^\s*(`{3,}|~{3,})/)
+        if (!f) continue
+        if (!fence) fence = f[1]
+        else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = ''
+    }
+    return `${cut}${fence ? `\n${fence}` : ''}\n\n_… cut at ${max} characters${rest ? `; the full section is in ${rest}` : ''}._`
+}
+
+/**
+ * Moves the headings of a markdown text down so that the highest is at level `min` (`### Added` under a `###` package
+ * heading becomes `#### Added`), keeping their relative levels; headings in code fences are left as they are.
+ */
+export function demoteHeadings (md, min) {
+    const lines = String(md).split('\n')
+    let fence = ''
+    const heading = lines.map(line => {
+        const f = line.match(/^\s*(`{3,}|~{3,})/)
+        if (f) {
+            if (!fence) fence = f[1]
+            else if (f[1][0] === fence[0] && f[1].length >= fence.length) fence = ''
+            return 0
+        }
+        return fence ? 0 : (line.match(/^(#{1,6})[ \t]/)?.[1].length ?? 0)
+    })
+    const top = Math.min(...heading.filter(Boolean))
+    const shift = Number.isFinite(top) ? min - top : 0
+    if (shift <= 0) return lines.join('\n')
+    return lines.map((line, i) => heading[i] ? '#'.repeat(Math.min(6, heading[i] + shift)) + line.slice(heading[i]) : line).join('\n')
+}
+
+/**
+ * The job summary of the check: a table of the packages to publish, then the CHANGELOG section and the commits of
+ * each, so the approver reads what each release says before approving.
+ * @param {object[]} packages - the packages of the release (check.mjs)
+ * @returns {string} GitHub-flavoured markdown
+ */
+export function summaryMarkdown (packages) {
+    const lines = ['## Packages to publish', '', '| package | version | dist-tag | tag | previous | commits |', '|---|---|---|---|---|---|']
+    for (const p of packages) {
+        lines.push(`| ${p.name} | ${p.version} | ${p.distTag || 'latest'} | \`${p.tag}\` | ${p.previousTag ? `\`${p.previousTag}\`` : 'none'} | ${p.commits.length} |`)
+    }
+    for (const p of packages) {
+        lines.push('', `### ${label(p)}`, '')
+        if (p.changelog) lines.push(demoteHeadings(p.changelog.trim(), 4))
+        else lines.push(`_No CHANGELOG section for ${p.version}._`)
+        if (p.commits.length) {
+            lines.push('', `<details><summary>${p.commits.length} commit(s) since ${p.previousTag || 'the start'}</summary>`, '')
+            lines.push(...p.commits.map(c => {
+                const {hash, subject} = splitCommit(c)
+                return `- \`${hash}\` ${subject}`
+            }))
+            lines.push('', '</details>')
+        }
+    }
+    return lines.join('\n') + '\n'
+}
+
+/**
+ * The commit that a published version was built from, as its npm provenance statement names it
+ * (`npm publish --provenance`), or '' when it has none or the registry cannot be read.
+ */
+export async function provenanceCommit (name, version) {
+    try {
+        const res = await fetch(`https://registry.npmjs.org/-/npm/v1/attestations/${name.replace('/', '%2f')}@${version}`)
+        if (!res.ok) return ''
+        const body = await res.json()
+        for (const a of body.attestations ?? []) {
+            if (!String(a.predicateType).startsWith('https://slsa.dev/provenance/')) continue
+            const statement = JSON.parse(Buffer.from(a.bundle?.dsseEnvelope?.payload ?? '', 'base64').toString('utf8'))
+            const commit = statement.predicate?.buildDefinition?.resolvedDependencies?.[0]?.digest?.gitCommit
+            if (commit) return String(commit)
+        }
+    } catch { /* no provenance to read */ }
+    return ''
+}
+
+/**
+ * Where publish.mjs puts the git tag of a package, and whether it creates it.
+ * The tag belongs on this run's commit, except for a version that was on npm before this run (two queued runs that
+ * both listed it, or a re-run): there it belongs on the commit that the version's provenance names, which is the
+ * commit of the run that published it.
+ * - no tag: `create` on that commit
+ * - a tag on that commit: `skip`
+ * - a version published before this run with no provenance commit (''): `skip` with `unverified`, as the commit it was
+ *   built from is not known
+ * - else: an error (the tag is on another commit)
+ * @param {{existing: string, sha: string, publishedBefore: boolean, publishedCommit?: string, tag: string}} t
+ *   existing: the commit of the tag, or ''; publishedCommit: from provenanceCommit, for a version published before
+ * @returns {{action: 'create' | 'skip', target: string, unverified?: boolean}}
+ */
+export function tagAction ({existing, sha, publishedBefore, publishedCommit = '', tag}) {
+    const target = publishedBefore && publishedCommit ? publishedCommit : sha
+    if (!existing) return {action: 'create', target}
+    if (existing === target) return {action: 'skip', target}
+    if (publishedBefore && !publishedCommit) return {action: 'skip', target: existing, unverified: true}
+    throw new Error(`the tag ${tag} is on ${existing}, not on ${target}${target === sha ? '' : ', the commit that published it'}`)
+}
+
+/** The characters of CHANGELOG text in a review request, shared by its packages (the request stays well under 64 KiB) */
+export const REVIEW_CHANGELOG_BUDGET = 30000
+/** The largest review request: the UTF-8 bytes of its JSON payload (the routine fire endpoint takes at most 64 KiB) */
+export const REVIEW_TEXT_LIMIT = 60000
+
+/** The UTF-8 bytes of the payload that fireReview sends for a text */
+export function reviewPayloadBytes (text) {
+    return Buffer.byteLength(JSON.stringify(firePayload(text)), 'utf8')
+}
+
+/**
+ * The text of the review request sent to the Claude Code routine. The CHANGELOG sections share a budget (characters);
+ * a request whose payload is over REVIEW_TEXT_LIMIT bytes still goes: without the sections and with fewer commits,
+ * then cut at a line, each with a note.
  * @param {{repository: string, sha: string, runUrl: string, packages: object[]}} release
  */
 export function reviewText ({repository, sha, runUrl, packages}, failed = []) {
     const gone = new Set(failed.map(f => f.name))
-    const lines = [
-        'npm release review',
-        `repository: ${repository}`,
-        `commit: ${sha}`,
-        `run (approval pending): ${runUrl}`,
-        `packages (${packages.length - gone.size}, in publish order):`,
-    ]
-    for (const p of packages.filter(x => !gone.has(x.name))) {
-        lines.push(`- ${label(p)}`, `  directory: ${p.dir}`, `  release tag: ${p.tag}`, `  previous release tag: ${p.previousTag || 'none'}`)
-        if (p.commits.length) lines.push('  commits since the previous release:', ...p.commits.map(c => `    ${c}`))
-        else lines.push('  commits since the previous release: none')
+    const listed = packages.filter(x => !gone.has(x.name))
+    const build = (each, maxCommits) => {
+        const lines = [
+            'npm release review',
+            `repository: ${repository}`,
+            `commit: ${sha}`,
+            `run (approval pending): ${runUrl}`,
+            `packages (${listed.length}, in publish order):`,
+        ]
+        for (const p of listed) {
+            lines.push(`- ${label(p)}`, `  directory: ${p.dir}`, `  release tag: ${p.tag}`, `  previous release tag: ${p.previousTag || 'none'}`)
+            const commits = p.commits.slice(0, maxCommits)
+            if (commits.length) {
+                lines.push('  commits since the previous release:', ...commits.map(c => `    ${c}`))
+                if (p.commits.length > commits.length) lines.push(`    … ${p.commits.length - commits.length} more`)
+            } else lines.push('  commits since the previous release: none')
+            if (!p.changelog) lines.push('  CHANGELOG section: none')
+            else if (each) lines.push('  CHANGELOG section:', ...clipMarkdown(p.changelog, each, `${p.dir}/CHANGELOG.md`).split('\n').map(l => `    ${l}`))
+            else lines.push(`  CHANGELOG section: in ${p.dir}/CHANGELOG.md (left out of this request for its size)`)
+        }
+        if (failed.length) lines.push('not built, left out of this release:', ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
+        return lines.join('\n') + '\n'
     }
-    if (failed.length) lines.push('not built, left out of this release:', ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
-    return lines.join('\n') + '\n'
+    const each = Math.max(200, Math.min(6000, Math.floor(REVIEW_CHANGELOG_BUDGET / Math.max(1, listed.length))))
+    const full = build(each, Infinity)
+    if (reviewPayloadBytes(full) <= REVIEW_TEXT_LIMIT) return full
+    const short = build(0, 5)
+    if (reviewPayloadBytes(short) <= REVIEW_TEXT_LIMIT) return short
+    // whole lines from the end, until the payload fits with the note
+    const note = '… the request was cut for its size; the release plan is in the run (artifact npm-release-plan)'
+    const lines = short.trimEnd().split('\n')
+    let size = reviewPayloadBytes([...lines, note].join('\n') + '\n')
+    while (lines.length > 1 && size > REVIEW_TEXT_LIMIT) size -= reviewPayloadBytes(lines.pop() + '\n') - reviewPayloadBytes('')
+    return [...lines, note].join('\n') + '\n'
 }
 
 /**

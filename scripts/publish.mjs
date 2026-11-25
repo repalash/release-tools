@@ -4,7 +4,9 @@
 // - Authentication is npm trusted publishing (OIDC): the job needs `id-token: write`, npm >= 11.5.1.
 // - `npm publish <tarball> --provenance --access public --ignore-scripts`, with `--tag <dist-tag>`
 //   for a prerelease (`next`) or a package that sets publishConfig.tag.
-// - A version that is on npm already is not published again, so a re-run continues a partial release.
+// - A version that is on npm already is not published again, so a re-run continues a partial release. Its tag and
+//   GitHub release go on the commit that its npm provenance names, the commit of the run that published it (two
+//   queued runs that both listed the version), not on this run's commit.
 // - The first publish failure stops the run: a package is never published without the listed
 //   packages it depends on. Tag and release failures are collected and fail the run at the end.
 // - Tags and releases use the GitHub API through `gh` (env GH_TOKEN, `contents: write`).
@@ -18,7 +20,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import {execFileSync} from 'node:child_process'
-import {isPublished, parseRelease, readRelease, tarballPlan} from './lib.mjs'
+import {isPublished, parseRelease, provenanceCommit, readRelease, tagAction, tarballPlan} from './lib.mjs'
 
 const {values: args} = parseArgs({
     options: {
@@ -64,7 +66,9 @@ function releaseNotes (p) {
     return ''
 }
 
-function markRelease (p, tarball) {
+async function markRelease (p, tarball, publishedBefore) {
+    // a version on npm before this run belongs on the commit that published it (its provenance), not on this one
+    const publishedCommit = publishedBefore ? await provenanceCommit(p.name, p.version) : ''
     if (args['github-release']) {
         if (!dryRun && ok('gh', ['release', 'view', p.tag, '--repo', repo])) {
             console.log(`The GitHub release ${p.tag} exists; skipped`)
@@ -72,24 +76,27 @@ function markRelease (p, tarball) {
         }
         const notes = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'notes-')), 'notes.md')
         fs.writeFileSync(notes, releaseNotes(p))
-        gh(['release', 'create', p.tag, tarball, '--repo', repo, '--target', sha, '--title', `${p.name}@${p.version}`,
+        gh(['release', 'create', p.tag, tarball, '--repo', repo, '--target', publishedCommit || sha, '--title', `${p.name}@${p.version}`,
             '--notes-file', notes, ...(p.prerelease ? ['--prerelease'] : [])])
         console.log(`✓ GitHub release ${p.tag}`)
         return
     }
+    let target = publishedCommit || sha
     if (!dryRun) {
         let existing = ''
         try {
             existing = execFileSync('gh', ['api', `repos/${repo}/git/ref/tags/${p.tag}`, '--jq', '.object.sha'], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim()
         } catch { /* the tag does not exist */ }
-        if (existing === sha) {
-            console.log(`The tag ${p.tag} exists; skipped`)
+        const t = tagAction({existing, sha, publishedBefore, publishedCommit, tag: p.tag})
+        if (t.action === 'skip') {
+            if (t.unverified) console.log(`::warning::The tag ${p.tag} is on ${existing}; kept, as ${p.name}@${p.version} has no provenance that names the commit it was built from`)
+            else console.log(`The tag ${p.tag} exists on ${existing}${existing === sha ? '' : ', the commit that published it'}; skipped`)
             return
         }
-        if (existing) throw new Error(`the tag ${p.tag} exists on another commit (${existing})`)
+        target = t.target
     }
-    gh(['api', '--method', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${p.tag}`, '-f', `sha=${sha}`, '--silent'])
-    console.log(`✓ Tag ${p.tag}`)
+    gh(['api', '--method', 'POST', `repos/${repo}/git/refs`, '-f', `ref=refs/tags/${p.tag}`, '-f', `sha=${target}`, '--silent'])
+    console.log(`✓ Tag ${p.tag}${target === sha ? '' : ` on ${target}, the commit that published it`}`)
 }
 
 if (!dryRun) checkNpmVersion()
@@ -103,7 +110,8 @@ const markErrors = []
 for (const p of packages) {
     const tarball = path.resolve(args.tarballs, p.tarball)
     if (!fs.existsSync(tarball)) throw new Error(`${p.tarball} is not in ${args.tarballs}`)
-    if (!dryRun && isPublished(p.name, p.version)) {
+    const publishedBefore = !dryRun && isPublished(p.name, p.version)
+    if (publishedBefore) {
         console.log(`\n${p.name}@${p.version} is on npm already; not published again`)
     } else {
         console.log(`\nPublishing ${p.name}@${p.version}${p.distTag ? ` with dist-tag ${p.distTag}` : ''}`)
@@ -113,7 +121,7 @@ for (const p of packages) {
         console.log(`✓ ${p.name}@${p.version}${dryRun ? ' (dry run)' : ''}`)
     }
     try {
-        markRelease(p, tarball)
+        await markRelease(p, tarball, publishedBefore)
     } catch (e) {
         console.error(`! ${p.name}@${p.version} is published, but ${p.tag} was not created: ${e.message}`)
         markErrors.push(p.tag)
