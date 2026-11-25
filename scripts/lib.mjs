@@ -369,6 +369,46 @@ function label (p) {
 }
 
 /**
+ * The job summary of the check: a table of the packages to publish, then the CHANGELOG section (or the commits, when
+ * there is none) of each, so the approver reads what each release says before approving.
+ * @param {object[]} packages - the packages of the release (check.mjs)
+ * @returns {string} GitHub-flavoured markdown
+ */
+export function summaryMarkdown (packages) {
+    const lines = ['### Packages to publish', '', '| package | version | dist-tag | tag | previous | commits |', '|---|---|---|---|---|---|']
+    for (const p of packages) {
+        lines.push(`| ${p.name} | ${p.version} | ${p.distTag || 'latest'} | \`${p.tag}\` | ${p.previousTag ? `\`${p.previousTag}\`` : 'none'} | ${p.commits.length} |`)
+    }
+    for (const p of packages) {
+        lines.push('', `#### ${label(p)}`, '')
+        if (p.changelog) lines.push(p.changelog.trim())
+        else lines.push(`_No CHANGELOG section for ${p.version}._`)
+        if (p.commits.length) {
+            lines.push('', `<details><summary>${p.commits.length} commit(s) since ${p.previousTag || 'the start'}</summary>`, '')
+            lines.push(...p.commits.map(c => {
+                const {hash, subject} = splitCommit(c)
+                return `- \`${hash}\` ${subject}`
+            }))
+            lines.push('', '</details>')
+        }
+    }
+    return lines.join('\n') + '\n'
+}
+
+/**
+ * What publish.mjs does about the git tag of a package: `create` it, `skip` it (it is there), or throw.
+ * A tag on another commit is an error, unless the version was on npm before this run: the run that published it
+ * tagged its own commit (two release runs that both listed the package, the later one finding it published).
+ * @param {{existing: string, sha: string, publishedBefore: boolean, tag: string}} t - existing: the commit of the tag, or ''
+ * @returns {'create' | 'skip'}
+ */
+export function tagAction ({existing, sha, publishedBefore, tag}) {
+    if (!existing) return 'create'
+    if (existing === sha || publishedBefore) return 'skip'
+    throw new Error(`the tag ${tag} exists on another commit (${existing})`)
+}
+
+/**
  * The text of the review request sent to the Claude Code routine.
  * @param {{repository: string, sha: string, runUrl: string, packages: object[]}} release
  */
@@ -385,6 +425,8 @@ export function reviewText ({repository, sha, runUrl, packages}, failed = []) {
         lines.push(`- ${label(p)}`, `  directory: ${p.dir}`, `  release tag: ${p.tag}`, `  previous release tag: ${p.previousTag || 'none'}`)
         if (p.commits.length) lines.push('  commits since the previous release:', ...p.commits.map(c => `    ${c}`))
         else lines.push('  commits since the previous release: none')
+        if (p.changelog) lines.push('  CHANGELOG section:', ...p.changelog.trim().split('\n').map(l => `    ${l}`))
+        else lines.push('  CHANGELOG section: none')
     }
     if (failed.length) lines.push('not built, left out of this release:', ...failed.map(f => `- ${f.name}@${f.version}: ${f.error}`))
     return lines.join('\n') + '\n'

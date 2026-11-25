@@ -6,7 +6,7 @@ import path from 'node:path'
 import {
     changelogEntry, defaultTagFormat, blockingDep, buildClosure, deployDiscordText, deployReviewText, discordText, distTag, entryTargets, firePayload,
     formatTag, hasCommit, isMultiPackageInput, failureText, isPrerelease, missingEntries, parsePackagesInput, partialPlan, pickSecrets,
-    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, tagFormatFor, tagMatchPatterns,
+    readPackages, readRelease, reviewEligible, reviewText, sortByDependencies, splitCommit, summaryMarkdown, tagAction, tagFormatFor, tagMatchPatterns,
     tarballName, tarballPlan, validateTagFormat,
 } from '../lib.mjs'
 
@@ -162,11 +162,13 @@ test('reviewText lists every package with its commits', () => {
         '  commits since the previous release:',
         '    aaa1111 core: add x',
         '    bbb2222 core: fix y',
+        '  CHANGELOG section: none',
         '- ui@2.0.0-beta.1 (dist-tag next)',
         '  directory: packages/ui',
         '  release tag: ui-2.0.0-beta.1',
         '  previous release tag: none',
         '  commits since the previous release: none',
+        '  CHANGELOG section: none',
         '',
     ].join('\n'))
     assert.deepEqual(firePayload('hi'), {text: 'hi'})
@@ -390,4 +392,46 @@ test('tarballPlan: from the tarballs in a directory; a missing directory is an e
     } finally {
         fs.rmSync(dir, {recursive: true, force: true})
     }
+})
+
+test('reviewText includes the CHANGELOG section of each package', () => {
+    const text = reviewText({...release, packages: [{...pkgA, changelog: '- Fix: y\n- Add x'}]})
+    assert.ok(text.includes('  CHANGELOG section:\n    - Fix: y\n    - Add x\n'), text)
+})
+
+test('summaryMarkdown: the table, then each CHANGELOG section and the commits', () => {
+    const md = summaryMarkdown([{...pkgA, changelog: '## v1.2.0\n- Add x\n'}, pkgB])
+    assert.equal(md, [
+        '### Packages to publish',
+        '',
+        '| package | version | dist-tag | tag | previous | commits |',
+        '|---|---|---|---|---|---|',
+        '| core | 1.2.0 | latest | `core-1.2.0` | `core-1.1.0` | 2 |',
+        '| ui | 2.0.0-beta.1 | next | `ui-2.0.0-beta.1` | none | 0 |',
+        '',
+        '#### core@1.2.0',
+        '',
+        '## v1.2.0',
+        '- Add x',
+        '',
+        '<details><summary>2 commit(s) since core-1.1.0</summary>',
+        '',
+        '- `aaa1111` core: add x',
+        '- `bbb2222` core: fix y',
+        '',
+        '</details>',
+        '',
+        '#### ui@2.0.0-beta.1 (dist-tag next)',
+        '',
+        '_No CHANGELOG section for 2.0.0-beta.1._',
+        '',
+    ].join('\n'))
+})
+
+test('tagAction: create, skip, or fail on a tag of another commit', () => {
+    assert.equal(tagAction({existing: '', sha: 'a', publishedBefore: false, tag: 't'}), 'create')
+    assert.equal(tagAction({existing: 'a', sha: 'a', publishedBefore: false, tag: 't'}), 'skip')
+    assert.throws(() => tagAction({existing: 'b', sha: 'a', publishedBefore: false, tag: 't'}), /the tag t exists on another commit \(b\)/)
+    // two runs listed the package; the earlier one published and tagged it on its commit
+    assert.equal(tagAction({existing: 'b', sha: 'a', publishedBefore: true, tag: 't'}), 'skip')
 })

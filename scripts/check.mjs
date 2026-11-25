@@ -17,7 +17,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import {
     commitsSince, defaultTagFormat, distTag, formatTag, isMultiPackageInput, isPrerelease, isPublished,
-    previousTag, readChangelogEntry, readPackages, setOutputs, tagFormatFor, tagMatchPatterns, tarballName, validateTagFormat,
+    previousTag, readChangelogEntry, readPackages, setOutputs, summaryMarkdown, tagFormatFor, tagMatchPatterns, tarballName, validateTagFormat,
 } from './lib.mjs'
 
 const {values: args} = parseArgs({
@@ -88,11 +88,7 @@ if (process.env.RELEASE_FILE) {
     fs.writeFileSync(process.env.RELEASE_FILE, JSON.stringify(release))
 }
 
-if (process.env.GITHUB_STEP_SUMMARY && pending) {
-    const rows = release.packages.map(p => `| ${p.name} | ${p.version} | ${p.distTag || 'latest'} | \`${p.tag}\` | ${p.commits.length} |`)
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-        ['### Packages to publish', '', '| package | version | dist-tag | tag | commits |', '|---|---|---|---|---|', ...rows, ''].join('\n'))
-}
+if (process.env.GITHUB_STEP_SUMMARY && pending) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryMarkdown(release.packages))
 
 if (release.errors.length) {
     console.error('\n' + release.errors.join('\n'))
