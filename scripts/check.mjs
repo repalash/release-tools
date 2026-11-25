@@ -16,7 +16,7 @@ import {parseArgs} from 'node:util'
 import path from 'node:path'
 import fs from 'node:fs'
 import {
-    commitsSince, defaultTagFormat, distTag, formatTag, isMultiPackageInput, isPrerelease, isPublished,
+    clipMarkdown, commitsSince, defaultTagFormat, distTag, formatTag, isMultiPackageInput, isPrerelease, isPublished,
     previousTag, readChangelogEntry, readPackages, setOutputs, summaryMarkdown, tagFormatFor, tagMatchPatterns, tarballName, validateTagFormat,
 } from './lib.mjs'
 
@@ -72,7 +72,7 @@ for (const p of readPackages(root, input)) {
         tarball: tarballName(p.name, p.version),
         previousTag: prev,
         commits: commitsSince(root, prev, p.dir),
-        changelog: changelog ? changelog.slice(0, 20000) : '',
+        changelog: changelog ? clipMarkdown(changelog, 20000, path.posix.join(p.dir, 'CHANGELOG.md')) : '',
         // the packages of this repository it builds with, and those it needs when published (a partial release leaves
         // it out when one of these is not published)
         internalDeps: p.internalDeps,
